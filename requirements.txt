@@ -11,3 +11,6 @@ seaborn==0.13.2
 
 # Jupyter notebooks
 ipykernel==7.1.0
+
+# MLflow experiment tracking
+mlflow==3.18.0
