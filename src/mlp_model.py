@@ -38,7 +38,7 @@ import model_utils as mu
 ALGORITHM = "MLPClassifier"
 SHORT_NAME = "MLP"
 
-# Settings selected by the validation search (see notebooks/mlp_neural_network.ipynb).
+# Settings selected by the validation search (see notebooks/mlp_neural_network_emi.ipynb).
 SELECTED_PARAMS = {
     "hidden_layer_sizes": (64, 32),
     "activation": "tanh",        # tanh beat relu on validation AP (relu peaked after 1 epoch)
