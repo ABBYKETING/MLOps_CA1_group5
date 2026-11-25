@@ -302,7 +302,8 @@ RUN_ALGORITHM_NAMES = {
     "MLPClassifier": "mlp",
     "LogisticRegression": "logistic_regression",
     "HistGradientBoostingClassifier": "hist_gradient_boosting",
-    "ExtraTreesClassifier": "extra_trees"
+    "ExtraTreesClassifier": "extra_trees",
+    "LGBMClassifier": "lightgbm",
 }
 
 
