@@ -297,7 +297,9 @@ def setup_mlflow(experiment=DEFAULT_EXPERIMENT, tracking_uri=None):
 
 
 # {algorithm} part of the run name, lowercase snake_case like "logistic_regression"
-RUN_ALGORITHM_NAMES = {"DecisionTreeClassifier": "decision_tree", "MLPClassifier": "mlp"}
+RUN_ALGORITHM_NAMES = {"DecisionTreeClassifier": "decision_tree", "MLPClassifier": "mlp",
+                       "LogisticRegression": "logistic_regression",
+                       "HistGradientBoostingClassifier": "hist_gradient_boosting"}
 
 
 def mlflow_run_name(result, version=MODEL_VERSION):
@@ -380,12 +382,15 @@ def log_run_to_mlflow(result, model, X_example, plot_dir, tracking_location, pre
 def run_training(algorithm, short_name, dataset_type, df, train_fn, params,
                  importance_fn, threshold=None, output_dir=DEFAULT_OUTPUT_DIR,
                  dataset_sha256="", sample_frac=None, mlflow_location=None,
-                 developer=DEFAULT_DEVELOPER, snapshot_features=(), trusted_types=()):
+                 developer=DEFAULT_DEVELOPER, snapshot_features=(), trusted_types=(),
+                 threshold_fn=None, threshold_rule=None):
     """Split -> train -> choose threshold -> evaluate -> plots -> (optional) MLflow.
 
     train_fn(X_train, y_train, X_val, y_val, params) must return (model, info_dict)
     where model has predict_proba. If ``threshold`` is given it is reused
     (so a full-feature run uses exactly the same cut-off as its safe run).
+    ``threshold_fn(y_val, prob_val)`` lets a model use its own threshold rule
+    (default: choose_threshold, max F1); ``threshold_rule`` is its description.
     """
     import joblib
 
@@ -400,9 +405,11 @@ def run_training(algorithm, short_name, dataset_type, df, train_fn, params,
     train_seconds = time.perf_counter() - start
 
     prob_val, _ = timed_predict_proba(model, X_val)
-    threshold_rule = "reused from safe run" if threshold is not None else "max F1 on validation"
-    if threshold is None:
-        threshold = choose_threshold(y_val, prob_val)
+    if threshold is not None:
+        threshold_rule = "reused from safe run"
+    else:
+        threshold = (threshold_fn or choose_threshold)(y_val, prob_val)
+        threshold_rule = threshold_rule or "max F1 on validation"
     prob_test, inference_seconds = timed_predict_proba(model, X_test)
 
     result = {
@@ -469,7 +476,8 @@ def comparison_table(results):
 def run_safe_and_full(algorithm, short_name, train_fn, importance_fn, params,
                       datasets=("safe", "full"), data_dir=None, output_dir=DEFAULT_OUTPUT_DIR,
                       sample_frac=None, use_mlflow=True, experiment=DEFAULT_EXPERIMENT,
-                      tracking_uri=None, developer=DEFAULT_DEVELOPER, trusted_types=()):
+                      tracking_uri=None, developer=DEFAULT_DEVELOPER, trusted_types=(),
+                      threshold_fn=None, threshold_rule=None):
     """Train the same configuration on the safe and then the full dataset.
 
     The safe run chooses the threshold on validation data; the full run
@@ -500,6 +508,7 @@ def run_safe_and_full(algorithm, short_name, train_fn, importance_fn, params,
             dataset_sha256=checksums[dataset_type], sample_frac=sample_frac,
             mlflow_location=location, developer=developer,
             snapshot_features=SNAPSHOT_FEATURES, trusted_types=trusted_types,
+            threshold_fn=threshold_fn, threshold_rule=threshold_rule,
         )
         threshold = result["threshold"]  # full run reuses the safe threshold
         results.append(result)
