@@ -14,3 +14,7 @@ ipykernel==7.1.0
 
 # MLflow experiment tracking
 mlflow==3.18.0
+
+# Database (AWS RDS MySQL)
+SQLAlchemy==2.0.58
+PyMySQL==1.2.4
