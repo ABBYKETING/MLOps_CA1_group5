@@ -28,7 +28,7 @@ SHORT_NAME = "DT"
 # Internal sklearn type MLflow must trust when saving the tree (we trained it ourselves)
 TRUSTED_TYPES = ["sklearn.tree._tree.Tree"]
 
-# Settings selected by the validation search (see notebooks/decision_tree.ipynb).
+# Settings selected by the validation search (see notebooks/decision_tree_emi.ipynb).
 # Used for DT_safe, DT_full and future automated retraining (PBI 05).
 SELECTED_PARAMS = {
     "criterion": "entropy",
