@@ -8,6 +8,9 @@ data/processed/
 *.pkl
 *.joblib
 mlruns/
+
+# Local datasets
+/data/
 # Local model training outputs (plots, models, results)
 outputs/
 # Local MLflow server files
