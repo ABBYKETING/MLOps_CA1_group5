@@ -7,3 +7,6 @@ data/processed/
 *.pkl
 *.joblib
 mlruns/
+
+# Local datasets
+/data/
