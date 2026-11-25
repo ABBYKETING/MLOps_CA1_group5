@@ -297,7 +297,8 @@ def setup_mlflow(experiment=DEFAULT_EXPERIMENT, tracking_uri=None):
 
 
 # {algorithm} part of the run name, lowercase snake_case like "logistic_regression"
-RUN_ALGORITHM_NAMES = {"DecisionTreeClassifier": "decision_tree", "MLPClassifier": "mlp"}
+RUN_ALGORITHM_NAMES = {"DecisionTreeClassifier": "decision_tree", "MLPClassifier": "mlp", "ExtraTreesClassifier": "extra_trees",
+    "HistGradientBoostingClassifier": "histgradientboosting"}
 
 
 def mlflow_run_name(result, version=MODEL_VERSION):
