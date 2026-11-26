@@ -18,3 +18,7 @@ lightgbm==4.7.0
 skops==0.16.0
 nbclient==0.11.0
 nbformat==5.11.1
+
+# Database (AWS RDS MySQL)
+SQLAlchemy==2.0.58
+PyMySQL==1.2.4
