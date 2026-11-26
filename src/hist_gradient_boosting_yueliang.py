@@ -2,9 +2,9 @@
 
 Run from the repository root, for example:
 
-    python src/hist_gradient_boosting.py                       # HGB_safe + HGB_full with the selected settings
-    python src/hist_gradient_boosting.py --tune                # small search on safe train/validation first
-    python src/hist_gradient_boosting.py --sample-frac 0.05 --no-mlflow   # quick smoke test
+    python src/hist_gradient_boosting_yueliang.py                       # HGB_safe + HGB_full with the selected settings
+    python src/hist_gradient_boosting_yueliang.py --tune                # small search on safe train/validation first
+    python src/hist_gradient_boosting_yueliang.py --sample-frac 0.05 --no-mlflow   # quick smoke test
 
 How it works: the model builds many small decision trees one after another.
 Each new tree focuses on the orders the previous trees got wrong, and the
