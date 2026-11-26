@@ -1,15 +1,23 @@
-"""PBI 02 - Logistic Regression fraud classifier (LR_safe and LR_full).
+"""PBI 02 - Hist Gradient Boosting fraud classifier (HGB_safe and HGB_full).
 
 Run from the repository root, for example:
 
-    python src/logistic_regression.py                       # LR_safe + LR_full with the selected settings
-    python src/logistic_regression.py --tune                # small search on safe train/validation first
-    python src/logistic_regression.py --sample-frac 0.05 --no-mlflow   # quick smoke test
+    python src/hist_gradient_boosting.py                       # HGB_safe + HGB_full with the selected settings
+    python src/hist_gradient_boosting.py --tune                # small search on safe train/validation first
+    python src/hist_gradient_boosting.py --sample-frac 0.05 --no-mlflow   # quick smoke test
 
-Why scaling? Logistic Regression multiplies each feature by a weight, so a feature
-with large values (e.g. account_age_days) would dominate one with small values.
-StandardScaler puts every feature on the same scale. It sits inside the Pipeline,
-so it is fitted on training data only and the coefficients can be compared.
+How it works: the model builds many small decision trees one after another.
+Each new tree focuses on the orders the previous trees got wrong, and the
+final score adds all the trees together. Unlike Logistic Regression, trees
+can learn combinations of features (e.g. a new account AND a large order).
+
+No scaling is needed: a tree only asks "is this value above or below X",
+so the size of the numbers does not matter.
+
+Early stopping: trees are added until the validation log-loss stops
+improving for n_iter_no_change rounds. The chronological validation period is
+used (same idea as the team's MLP), so the number of trees is chosen on
+orders that come after the training period. The test set is never used.
 
 Threshold rule: highest recall while validation precision >= PRECISION_TARGET,
 because the PO prioritises high precision with reasonable recall.
@@ -21,39 +29,42 @@ import time
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
 import model_utils as mu
 
-ALGORITHM = "LogisticRegression"
-SHORT_NAME = "LR"
+ALGORITHM = "HistGradientBoostingClassifier"
+SHORT_NAME = "HGB"
 DEVELOPER = os.environ.get("MODEL_DEVELOPER", "yueliang")
 
-# Pipeline, StandardScaler and LogisticRegression are trusted by default,
-# so MLflow's safe (skops) format needs no extra types for this model.
-TRUSTED_TYPES = []
+# MLflow saves models in the safe skops format, which only loads approved types.
+TRUSTED_TYPES = ["sklearn.ensemble._hist_gradient_boosting.predictor.TreePredictor"]
 
 PRECISION_TARGET = 0.70
 THRESHOLD_RULE = f"highest recall with validation precision >= {PRECISION_TARGET:.0%}"
 
-# Settings selected by the validation search (see notebooks/03_logreg_yueliang.ipynb).
-# Used for LR_safe, LR_full and future automated retraining (PBI 05).
+# Settings selected by the validation search (see notebooks/hgb_yueliang.ipynb).
+# Used for HGB_safe, HGB_full and future automated retraining (PBI 05).
 SELECTED_PARAMS = {
-    "C": 0.01,
-    "class_weight": "balanced",
-    "max_iter": 2000,
-    "solver": "lbfgs",
+    "learning_rate": 0.1,
+    "max_leaf_nodes": 63,
+    "l2_regularization": 1.0,
+    "class_weight": None,
+    "min_samples_leaf": 50,
+    "max_iter": 500,             # upper limit; early stopping usually stops earlier
+    "early_stopping": True,
+    "scoring": "loss",            # log-loss on validation; a scorer object cannot be saved in MLflow's safe format
+    "n_iter_no_change": 20,
     "random_state": mu.RANDOM_SEED,
 }
 
-# Small search: 4 x 2 = 8 models (about 2 seconds each).
-# C = how strongly the weights are kept small (smaller C = stronger regularisation).
+# Small search: 2 x 2 x 2 x 2 = 16 models.
 PARAM_GRID = {
-    "C": [0.01, 0.1, 1.0, 10.0],
-    "class_weight": [None, "balanced"],
+    "learning_rate": [0.05, 0.1],        # how big a step each new tree takes
+    "max_leaf_nodes": [31, 63],          # how complex each tree can be
+    "l2_regularization": [0.0, 1.0],     # penalty that keeps the trees simpler
+    "class_weight": [None, "balanced"],  # extra weight on fraud orders or not
 }
 
 
@@ -76,27 +87,28 @@ def recall_at_precision(y_true, prob, min_precision=PRECISION_TARGET):
 
 
 def create_model(params):
-    """Build an untrained scaler + Logistic Regression pipeline from a parameter dict."""
-    return Pipeline([("scaler", StandardScaler()), ("model", LogisticRegression(**params))])
+    """Build an untrained Hist Gradient Boosting model from a parameter dict."""
+    return HistGradientBoostingClassifier(**params)
 
 
 def train_model(X_train, y_train, X_val, y_val, params):
-    """Fit on training data only. X_val is not used by the model itself."""
+    """Fit on training data. Validation data is only used to decide when to stop adding trees."""
     model = create_model(params)
-    model.fit(X_train, y_train)
-    info = {"metrics": {"iterations": int(model.named_steps["model"].n_iter_[0])}}
+    start = time.perf_counter()
+    model.fit(X_train, y_train, X_val=X_val, y_val=y_val)
+    info = {"metrics": {"trees_used": int(model.n_iter_),
+                        "fit_seconds": round(time.perf_counter() - start, 2)}}
     return model, info
 
 
 def feature_importance(model, X_val, y_val, features):
-    """Coefficients on the scaled features.
+    """Permutation importance on a validation sample.
 
-    Positive = raises the fraud probability, negative = lowers it.
-    Ranked by size (absolute value) because both directions matter.
+    Trees have no coefficients, so we measure how much validation average
+    precision drops when each feature is randomly shuffled. A big drop means
+    the model relies on that feature.
     """
-    coef = model.named_steps["model"].coef_[0]
-    return (pd.DataFrame({"feature": features, "coefficient": coef, "importance": np.abs(coef)})
-            .sort_values("importance", ascending=False).reset_index(drop=True))
+    return mu.permutation_importance_table(model, X_val, y_val)
 
 
 def tune(df_safe, grid=PARAM_GRID, base_params=SELECTED_PARAMS, sample_frac=None):
@@ -113,10 +125,11 @@ def tune(df_safe, grid=PARAM_GRID, base_params=SELECTED_PARAMS, sample_frac=None
     for values in itertools.product(*grid.values()):
         params = {**base_params, **dict(zip(keys, values))}
         start = time.perf_counter()
-        model = create_model(params).fit(X_train, y_train)
+        model, info = train_model(X_train, y_train, X_val, y_val, params)
         seconds = time.perf_counter() - start
         prob = model.predict_proba(X_val)[:, 1]
         rows.append({**dict(zip(keys, values)),
+                     "trees_used": info["metrics"]["trees_used"],
                      "val_average_precision": average_precision_score(y_val, prob),
                      "val_roc_auc": roc_auc_score(y_val, prob),
                      f"val_recall_at_{PRECISION_TARGET:.0%}_precision": recall_at_precision(y_val, prob),
@@ -126,13 +139,16 @@ def tune(df_safe, grid=PARAM_GRID, base_params=SELECTED_PARAMS, sample_frac=None
     table = pd.DataFrame(rows).sort_values("val_average_precision", ascending=False)
     table["class_weight"] = table["class_weight"].fillna("None")
     best_row = table.iloc[0]
-    best = {**base_params, "C": float(best_row["C"]),
+    best = {**base_params,
+            "learning_rate": float(best_row["learning_rate"]),
+            "max_leaf_nodes": int(best_row["max_leaf_nodes"]),
+            "l2_regularization": float(best_row["l2_regularization"]),
             "class_weight": None if best_row["class_weight"] == "None" else best_row["class_weight"]}
     return table.reset_index(drop=True), best
 
 
 def run(params=None, **kwargs):
-    """Train LR_safe and LR_full (see model_utils.run_safe_and_full for options)."""
+    """Train HGB_safe and HGB_full (see model_utils.run_safe_and_full for options)."""
     kwargs.setdefault("developer", DEVELOPER)
     return mu.run_safe_and_full(ALGORITHM, SHORT_NAME, train_model, feature_importance,
                                 params or SELECTED_PARAMS, trusted_types=TRUSTED_TYPES,
@@ -141,7 +157,7 @@ def run(params=None, **kwargs):
 
 
 def main():
-    parser = mu.build_arg_parser("Train Logistic Regression fraud models (PBI 02).", SELECTED_PARAMS)
+    parser = mu.build_arg_parser("Train Hist Gradient Boosting fraud models (PBI 02).", SELECTED_PARAMS)
     parser.set_defaults(developer=DEVELOPER)
     args = parser.parse_args()
     params = mu.parse_params(args.params, SELECTED_PARAMS)
@@ -152,7 +168,7 @@ def main():
         print(table.to_string(index=False))
         print("Selected:", params)
         if not args.no_mlflow:
-            mu.log_tuning_table(table, "logistic_regression_tuning", args.experiment,
+            mu.log_tuning_table(table, "hist_gradient_boosting_tuning", args.experiment,
                                 args.tracking_uri, args.developer)
 
     start = time.perf_counter()
