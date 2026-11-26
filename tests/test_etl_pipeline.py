@@ -99,6 +99,48 @@ class TransformTests(unittest.TestCase):
         self.assertIn("does not fit the database column", rejected[0]["reason"])
         self.assertEqual(len(cleaned["orders"]), 2)
 
+    def test_rows_with_wrong_number_of_fields_are_rejected_not_stopping(self):
+        orders = GOOD_ORDERS + ['MY,o3,Delivery,"credit, card",5,1,0.0,2023/05/03',      # quoted comma is fine
+                                "MY,o4,Delivery,credit card,5,1,0.0,2023/05/03,EXTRA"]   # one field too many
+        _, cleaned, rejected = self.extract_and_transform(GOOD_CUSTOMERS, orders, GOOD_LABELS)
+        self.assertEqual([(r["record_id"], r["reason"]) for r in rejected],
+                         [("o4", "row has 9 fields, expected 8")])
+        self.assertEqual(json.loads(rejected[0]["raw_record"])["fields"][-1], "EXTRA")
+        self.assertEqual(sorted(cleaned["orders"]["order_id"]), ["o1", "o2", "o3"])
+
+    def test_future_dates_are_rejected(self):
+        orders = GOOD_ORDERS + ["MY,o3,Delivery,credit card,5,1,0.0,2100/01/01"]
+        customers = GOOD_CUSTOMERS + ["MY,c3,True,1,0,0,1.0,1,2100-01-01 00:00:00"]
+        _, cleaned, rejected = self.extract_and_transform(customers, orders, GOOD_LABELS)
+        self.assertEqual({r["record_id"]: r["reason"] for r in rejected},
+                         {"o3": "date is in the future", "c3": "date is in the future"})
+        self.assertEqual(len(cleaned["orders"]), 2)
+
+    def test_counts_too_large_for_the_database_are_rejected(self):
+        customers = GOOD_CUSTOMERS + ["MY,c3,True,99999999999,0,0,1.0,1,2022-01-01 00:00:00"]
+        _, cleaned, rejected = self.extract_and_transform(customers, GOOD_ORDERS, GOOD_LABELS)
+        self.assertEqual(len(rejected), 1)
+        self.assertIn("count too large", rejected[0]["reason"])
+        self.assertEqual(len(cleaned["customers"]), 2)
+
+    def test_header_names_are_trimmed_and_lowercased(self):
+        sources = write_batch(self.folder.name, "t", GOOD_CUSTOMERS, GOOD_ORDERS, GOOD_LABELS)
+        Path(sources["labels"]).write_text(" Country_Code ,ORDER_ID,Customer_ID,is_fraud\n"
+                                           + "\n".join(GOOD_LABELS) + "\n", encoding="utf-8-sig")
+        raw = etl.extract(sources, "t", raw_dir=Path(self.folder.name) / "raw")
+        cleaned, rejected = etl.transform(raw)
+        self.assertEqual(rejected, [])
+        self.assertEqual(len(cleaned["fraud_labels"]), 2)
+
+    def test_empty_or_non_text_files_stop_with_a_clear_message(self):
+        sources = write_batch(self.folder.name, "t", GOOD_CUSTOMERS, GOOD_ORDERS, GOOD_LABELS)
+        Path(sources["labels"]).write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "is empty"):
+            etl.extract(sources, "t", raw_dir=Path(self.folder.name) / "raw")
+        Path(sources["labels"]).write_bytes("country_code".encode("utf-16"))
+        with self.assertRaisesRegex(ValueError, "not a UTF-8"):
+            etl.extract(sources, "t", raw_dir=Path(self.folder.name) / "raw")
+
     def test_missing_columns_stop_the_pipeline(self):
         sources = write_batch(self.folder.name, "t", GOOD_CUSTOMERS, GOOD_ORDERS, GOOD_LABELS)
         Path(sources["labels"]).write_text("country_code,order_id\nMY,o1\n", encoding="utf-8")

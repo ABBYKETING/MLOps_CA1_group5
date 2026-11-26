@@ -4,6 +4,9 @@ Extract   (#43) download customers_XXX.csv, orders_XXX.csv and labels_XXX.csv fr
                 their URLs (or read local files) and keep a raw copy in data/raw/<batch>/.
 Transform (#44) clean them with the team's shared rules in data_processing.py
                 and stop if the cleaned data fails the team's validation checks.
+                Rows that still cannot be stored (wrong number of fields, values too
+                long or too large for the columns, dates in the future) are rejected
+                with a reason instead of stopping the batch.
 Load (#45-#46)  write everything to the RDS tables in sql/schema.sql:
                 - customers: new ones inserted, existing ones updated ("latest wins")
                 - orders and fraud labels: new ones inserted, repeated ones replace
@@ -127,8 +130,45 @@ def download(url, destination, retries=3, timeout=60):
             time.sleep(2 * attempt)
 
 
+TEXT_COLUMNS = {"customers": dp.CUSTOMER_TEXT_COLS, "orders": dp.ORDER_TEXT_COLS,
+                "labels": dp.LABEL_TEXT_COLS}
+
+
+def read_batch_file(path, kind):
+    """Read one CSV file the same way as dp.load_raw, but more forgiving:
+    - header names are trimmed and lower-cased ("Order_ID " -> "order_id"), BOM removed
+    - a row with too many fields is set aside (rejected later) instead of stopping the batch
+    - unreadable files stop the batch with a clear message
+    The bad rows are kept in frame.attrs["bad_lines"]."""
+    name = Path(path).name
+    try:
+        header = pd.read_csv(path, nrows=0, encoding="utf-8-sig").columns
+    except pd.errors.EmptyDataError:
+        raise ValueError(f"{name} is empty (no header row)") from None
+    except UnicodeDecodeError:
+        raise ValueError(f"{name} is not a UTF-8 text CSV file") from None
+    clean_names = {col: str(col).strip().lower() for col in header}
+    text_dtype = {col: str for col, new in clean_names.items() if new in TEXT_COLUMNS[kind]}
+    bad_lines = []
+
+    def keep_bad_line(fields):
+        bad_lines.append(fields)
+        return None                                    # drop it from the table
+
+    options = dict(dtype=text_dtype, encoding="utf-8-sig")
+    try:
+        frame = pd.read_csv(path, **options)            # fast C parser for normal files
+    except pd.errors.ParserError:
+        frame = pd.read_csv(path, engine="python", on_bad_lines=keep_bad_line, **options)
+    except UnicodeDecodeError:
+        raise ValueError(f"{name} is not a UTF-8 text CSV file") from None
+    frame = frame.rename(columns=clean_names)
+    frame.attrs["bad_lines"] = bad_lines
+    return frame
+
+
 def extract(sources, batch_name, raw_dir=DEFAULT_RAW_DIR):
-    """Fetch the 3 files into raw_dir/<batch>/ and read them with the team's loader."""
+    """Fetch the 3 files into raw_dir/<batch>/ and read them (see read_batch_file)."""
     folder = Path(raw_dir) / batch_name
     folder.mkdir(parents=True, exist_ok=True)
     for kind in FILE_KINDS:
@@ -142,7 +182,8 @@ def extract(sources, batch_name, raw_dir=DEFAULT_RAW_DIR):
                 raise FileNotFoundError(f"{kind} file not found: {source}")
             if source.resolve() != destination.resolve():
                 shutil.copyfile(source, destination)
-    customers, orders, labels = dp.load_raw(folder, batch_name)
+    customers, orders, labels = (read_batch_file(folder / f"{kind}_{batch_name}.csv", kind)
+                                 for kind in FILE_KINDS)
     expected = {"customers": TABLE_COLUMNS["customers"],
                 "orders": TABLE_COLUMNS["orders"],
                 "labels": TABLE_COLUMNS["fraud_labels"]}
@@ -176,8 +217,26 @@ def rejected_from_cleaning(rejected, raw, source_table, id_column):
             for (_, r), reason in zip(raw_rows.iterrows(), rejected["reason"])]
 
 
+def rejected_bad_lines(bad_lines, columns, source_table, id_column):
+    """Rows with too many fields: rejected with every field kept as received."""
+    rejected = []
+    for fields in bad_lines:
+        named = dict(zip(columns, fields))
+        rejected.append({"source_table": source_table,
+                         "country_code": (named.get("country_code") or None) and str(named["country_code"])[:16],
+                         "record_id": (named.get(id_column) or None) and str(named[id_column])[:64],
+                         "reason": f"row has {len(fields)} fields, expected {len(columns)}",
+                         "raw_record": json.dumps({"fields": fields})})
+    return rejected
+
+
 # Longest value each text column can hold in the RDS tables (sql/schema.sql)
 COLUMN_LIMITS = {"country_code": 2, "customer_id": 32, "order_id": 32, "payment_method": 40}
+# Count columns are INT UNSIGNED in the RDS tables
+INT_UNSIGNED_MAX = 4_294_967_295
+INT_COLUMNS = ["num_orders_last_50days", "num_cancelled_orders_last_50days",
+               "num_refund_orders_last_50days", "num_associated_customers", "num_items_ordered"]
+DATE_COLUMNS = ["order_date", "first_order_datetime"]
 
 
 def reject_unfit_for_schema(cleaned_frame):
@@ -191,27 +250,52 @@ def reject_unfit_for_schema(cleaned_frame):
             if column == "country_code":
                 bad |= values.str.len() != limit
             too_long |= bad
-    rejected = cleaned_frame[too_long].assign(
-        reason="value does not fit the database column (country_code must be 2 letters, "
-               "IDs at most 32 characters, payment_method at most 40)")
-    return cleaned_frame[~too_long], rejected
+    too_big = pd.Series(False, index=cleaned_frame.index)
+    for column in INT_COLUMNS:
+        if column in cleaned_frame:
+            too_big |= cleaned_frame[column] > INT_UNSIGNED_MAX
+    reason = pd.Series(None, index=cleaned_frame.index, dtype=object)
+    reason[too_big] = f"count too large for the database column (max {INT_UNSIGNED_MAX:,})"
+    reason[too_long] = ("value does not fit the database column (country_code must be 2 letters, "
+                        "IDs at most 32 characters, payment_method at most 40)")
+    bad = reason.notna()
+    return cleaned_frame[~bad], cleaned_frame[bad].assign(reason=reason[bad])
 
 
-def transform(raw):
-    """Clean the 3 raw tables with the team's shared rules (same as the historical data)."""
+def reject_future_dates(cleaned_frame, now=None):
+    """Orders or first-order dates later than now cannot be real, so they are rejected
+    (otherwise the integrity check "no future dates" would fail after loading)."""
+    now = pd.Timestamp.now() if now is None else pd.Timestamp(now)
+    future = pd.Series(False, index=cleaned_frame.index)
+    for column in DATE_COLUMNS:
+        if column in cleaned_frame:
+            future |= pd.to_datetime(cleaned_frame[column]) > now
+    return cleaned_frame[~future], cleaned_frame[future].assign(reason="date is in the future")
+
+
+def transform(raw, now=None):
+    """Clean the 3 raw tables with the team's shared rules (same as the historical data),
+    then reject rows that cannot be stored. `now` is only set by the tests."""
     tagged = {kind: frame.assign(_row=range(len(frame))) for kind, frame in raw.items()}
     customers, rej_c = dp.clean_customers(tagged["customers"])
     orders, rej_o = dp.clean_orders(tagged["orders"])
     labels, rej_l = dp.clean_labels(tagged["labels"])
     dp.validate_or_raise(customers, orders, labels)     # stop before loading anything bad
-    customers, too_long_c = reject_unfit_for_schema(customers)
-    orders, too_long_o = reject_unfit_for_schema(orders)
-    labels, too_long_l = reject_unfit_for_schema(labels)
-    rej_c, rej_o, rej_l = (pd.concat([f for f in pair if not f.empty] or [pair[0]], ignore_index=True)
-                           for pair in ((rej_c, too_long_c), (rej_o, too_long_o), (rej_l, too_long_l)))
-    rejected = (rejected_from_cleaning(rej_c, raw["customers"], "customers", "customer_id")
-                + rejected_from_cleaning(rej_o, raw["orders"], "orders", "order_id")
-                + rejected_from_cleaning(rej_l, raw["labels"], "fraud_labels", "order_id"))
+    customers, unfit_c = reject_unfit_for_schema(customers)
+    orders, unfit_o = reject_unfit_for_schema(orders)
+    labels, unfit_l = reject_unfit_for_schema(labels)
+    customers, future_c = reject_future_dates(customers, now)
+    orders, future_o = reject_future_dates(orders, now)
+    rej_c, rej_o, rej_l = (pd.concat([f for f in group if not f.empty] or [group[0]], ignore_index=True)
+                           for group in ((rej_c, unfit_c, future_c), (rej_o, unfit_o, future_o),
+                                         (rej_l, unfit_l)))
+    rejected = []
+    for kind, table, id_column, rej in (("customers", "customers", "customer_id", rej_c),
+                                        ("orders", "orders", "order_id", rej_o),
+                                        ("labels", "fraud_labels", "order_id", rej_l)):
+        rejected += rejected_from_cleaning(rej, raw[kind], table, id_column)
+        rejected += rejected_bad_lines(raw[kind].attrs.get("bad_lines", []), list(raw[kind].columns),
+                                       table, id_column)
     return {"customers": customers, "orders": orders, "fraud_labels": labels}, rejected
 
 
