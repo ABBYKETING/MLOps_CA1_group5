@@ -339,7 +339,8 @@ def log_run_to_mlflow(result, model, X_example, plot_dir, tracking_location, pre
             "model_class": result["algorithm"],
             "pbi": "PBI-02",
             "run_type": "primary",
-            "production_eligible": str(not is_full).lower(),
+            "selection_candidate": str(result["selection_candidate"]).lower(),
+            "production_eligible": "false",
             "exploratory": str(is_full).lower(),
             "tracking_location": tracking_location,
             "note": ("Contains uncertain customer snapshot features - leakage "
@@ -427,7 +428,8 @@ def run_training(algorithm, short_name, dataset_type, df, train_fn, params,
         "test": evaluate(y_test, prob_test, threshold),
         "train_seconds": train_seconds, "inference_seconds_test": inference_seconds,
         "extra_metrics": {k: float(v) for k, v in info.get("metrics", {}).items()},
-        "production_eligible": dataset_type == "safe",
+        "selection_candidate": dataset_type == "safe" and sample_frac is None,
+        "production_eligible": False,
         "sample_frac": sample_frac,
     }
 
@@ -470,6 +472,7 @@ def comparison_table(results):
             "TP": t["tp"], "FP": t["fp"], "FN": t["fn"], "TN": t["tn"],
             "Threshold": r["threshold"], "Train seconds": r["train_seconds"],
             "Inference seconds (test)": r["inference_seconds_test"],
+            "Selection candidate": "Yes" if r["selection_candidate"] else "No",
             "Production eligible": "Yes" if r["production_eligible"] else "No",
         }
     return pd.DataFrame(rows)
@@ -569,6 +572,7 @@ def log_tuning_table(table, run_name, experiment=DEFAULT_EXPERIMENT, tracking_ur
     location = setup_mlflow(experiment, tracking_uri)
     with mlflow.start_run(run_name=f"{developer}_{run_name}_{MODEL_VERSION}"):
         mlflow.set_tags({"run_type": "tuning", "pbi": "PBI-02", "dataset_version": "safe",
+                         "selection_candidate": "false",
                          "production_eligible": "false", "tracking_location": location,
                          "team_member": developer, "model_version": MODEL_VERSION})
         mlflow.log_table(table, "tuning_results.json")
