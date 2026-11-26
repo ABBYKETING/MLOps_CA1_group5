@@ -51,3 +51,57 @@ Run the integration test from the repository root while a local MLflow server is
 The integration test uses synthetic data to verify parameter logging, metric logging, artifact retrieval, model storage and model reloading.
 
 The current implementation has been successfully tested with scikit-learn Logistic Regression. Other model types must be verified for compatibility before formal experiment logging.
+
+## ETL Pipeline (PBI 4)
+
+Cleans each new batch of `customers_XXX.csv`, `orders_XXX.csv` and `labels_XXX.csv` with the team's rules in `src/data_processing.py` and loads it into the RDS MySQL database. Customers, orders and labels that already exist are updated ("latest wins"). Rows that cannot be used are saved in `rejected_records` with a reason. Each run is recorded in `etl_batches`.
+
+### 1. Set the connection (once per terminal)
+
+Never hard-code these values or commit them.
+
+```powershell
+$env:DB_HOST = "<RDS endpoint>"
+$env:DB_USER = "<username>"
+$env:DB_PASSWORD = "<password>"
+$env:DB_NAME = "spbuy"        # optional, default spbuy
+```
+
+### 2. Run a new batch (interview demo)
+
+```powershell
+python src/etl_pipeline.py --customers <customers URL> --orders <orders URL> --labels <labels URL>
+```
+
+The batch name is taken from the file postfix (`XXX`). A summary is written to `outputs/etl/<batch>_summary.json`.
+
+Other options:
+
+| Command | Purpose |
+|---|---|
+| `python src/etl_pipeline.py --data-dir <folder> --postfix base` | Load local files (the historical base data is already loaded) |
+| `python src/etl_pipeline.py ... --dry-run` | Extract and clean only, without touching the database |
+| `python src/database.py` | Create the tables from `sql/schema.sql` (safe to re-run) |
+| `python src/database.py --check` | Check the connection and tables |
+
+### 3. Check the data after a run
+
+```powershell
+python src/check_data_integrity.py
+```
+
+This prints row counts, rejected rows by reason and 11 PASS/FAIL checks, and exits with code 1 if any check fails.
+
+### 4. Tests
+
+```powershell
+python -m unittest tests.test_etl_pipeline -v
+```
+
+The database test runs only when `ETL_TEST_DATABASE` names a separate practice database (for example `spbuy_practice`). It refuses to run against `spbuy`.
+
+### What happens to bad data
+
+- **A bad row** (wrong value, duplicate, future date, too long, malformed line, or a label without its order or customer) is rejected with a reason, and the rest of the batch loads.
+- **A bad file** (missing column, empty, not a UTF-8 CSV, unreachable URL) stops the run before anything is loaded.
+- **A database error** rolls back the whole batch and marks it `failed`; fix the problem and run the same command again.
