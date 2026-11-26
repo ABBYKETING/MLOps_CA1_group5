@@ -2,14 +2,14 @@
 
 Run from the repository root, for example:
 
-    python src/logistic_regression.py                       # LR_safe + LR_full with the selected settings
-    python src/logistic_regression.py --tune                # small search on safe train/validation first
-    python src/logistic_regression.py --sample-frac 0.05 --no-mlflow   # quick smoke test
+    python src/logistic_regression_yueliang.py                       # LR_safe + LR_full with the selected settings
+    python src/logistic_regression_yueliang.py --tune                # small search on safe train/validation first
+    python src/logistic_regression_yueliang.py --sample-frac 0.05 --no-mlflow   # quick smoke test
 
 Why scaling? Logistic Regression multiplies each feature by a weight, so a feature
 with large values (e.g. account_age_days) would dominate one with small values.
 StandardScaler puts every feature on the same scale. It sits inside the Pipeline,
-so it is fitted on training data only and the coefficients can be compared.
+so it is fitted on the training data only and the coefficients can be compared.
 
 Threshold rule: highest recall while validation precision >= PRECISION_TARGET,
 because the PO prioritises high precision with reasonable recall.
@@ -39,7 +39,7 @@ TRUSTED_TYPES = []
 PRECISION_TARGET = 0.70
 THRESHOLD_RULE = f"highest recall with validation precision >= {PRECISION_TARGET:.0%}"
 
-# Settings selected by the validation search (see notebooks/03_logreg_yueliang.ipynb).
+# Settings selected by the validation search (see notebooks/logreg_yueliang.ipynb).
 # Used for LR_safe, LR_full and future automated retraining (PBI 05).
 SELECTED_PARAMS = {
     "C": 0.01,
