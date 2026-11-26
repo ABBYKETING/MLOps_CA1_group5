@@ -16,3 +16,10 @@ outputs/
 # Local MLflow server files
 mlflow.db
 mlartifacts/
+
+# Local MLflow authentication and database files
+basic_auth.db
+*.db-journal
+*.db-wal
+*.db-shm
+auth_config.ini
