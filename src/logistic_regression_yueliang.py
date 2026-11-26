@@ -9,7 +9,7 @@ Run from the repository root, for example:
 Why scaling? Logistic Regression multiplies each feature by a weight, so a feature
 with large values (e.g. account_age_days) would dominate one with small values.
 StandardScaler puts every feature on the same scale. It sits inside the Pipeline,
-so it is fitted on training data only and the coefficients can be compared.
+so it is fitted on the training data only and the coefficients can be compared.
 
 Threshold rule: highest recall while validation precision >= PRECISION_TARGET,
 because the PO prioritises high precision with reasonable recall.
