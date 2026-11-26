@@ -1,0 +1,35 @@
+services:
+  mlflow:
+    build: .
+    image: spbuy-mlflow:shared
+    container_name: spbuy-mlflow-shared
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5006:5000"
+    environment:
+      MLFLOW_AUTH_CONFIG_PATH: /app/auth_config.ini
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SERVER_SECRET_KEY:?Required}
+      MLFLOW_SERVER_ALLOWED_HOSTS: ${MLFLOW_ALLOWED_HOSTS:?Required}
+      MLFLOW_SERVER_CORS_ALLOWED_ORIGINS: ${MLFLOW_CORS_ORIGINS:?Required}
+      MLFLOW_ENABLE_REMOTE_ASSISTANT: "false"
+    volumes:
+      - mlflow-data:/app/data
+      - ./auth_config.ini:/app/auth_config.ini:ro
+    command:
+      - mlflow
+      - server
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - sqlite:////app/data/mlflow.db
+      - --artifacts-destination
+      - /app/data/mlartifacts
+      - --serve-artifacts
+      - --app-name
+      - basic-auth
+
+volumes:
+  mlflow-data:
+    name: spbuy-mlflow-shared-data
