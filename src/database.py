@@ -2,7 +2,8 @@
 
 Creates the SP-buy database tables defined in sql/schema.sql and provides
 ``get_engine()``, which the ETL pipeline, analytics and Prefect flows can reuse
-to connect to the same database.
+to connect to the same database. ``load_training_data()`` reads the latest
+labelled rows for model retraining (PBI 5, Task #50).
 
 Connection settings come from environment variables, never from the code:
 
@@ -24,6 +25,7 @@ import os
 import re
 from pathlib import Path
 
+import pandas as pd
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import URL
 
@@ -122,6 +124,48 @@ def check_tables(engine):
         raise RuntimeError(f"Tables missing from the database: {missing}")
     with engine.connect() as conn:
         return {t: conn.execute(text(f"SELECT COUNT(*) FROM `{t}`")).scalar() for t in EXPECTED_TABLES}
+
+
+# Same columns, in the same order, as data_processing.merge_datasets() (labels, then
+# order details, then customer details), so the result can go straight into
+# data_processing.build_feature_sets().
+TRAINING_QUERY = """
+    SELECT l.country_code, l.order_id, l.customer_id, l.is_fraud,
+           o.collect_type, o.payment_method, o.order_value, o.num_items_ordered,
+           o.refund_value, o.order_date,
+           c.mobile_verified, c.num_orders_last_50days, c.num_cancelled_orders_last_50days,
+           c.num_refund_orders_last_50days, c.total_payment_last_50days,
+           c.num_associated_customers, c.first_order_datetime
+    FROM fraud_labels l
+    JOIN orders o    ON o.country_code = l.country_code AND o.order_id = l.order_id
+    JOIN customers c ON c.country_code = l.country_code AND c.customer_id = l.customer_id
+    ORDER BY o.order_date, l.country_code, l.order_id
+"""
+
+
+def load_training_data(engine=None):
+    """Return every labelled order with its order and customer details (PBI 5, Task #50).
+
+    The database already holds the base data plus every loaded batch, with one
+    current record per customer, order and label ("latest wins"), so this is the
+    combined historical + new data. Rows come back sorted by order_date.
+
+    The result matches data_processing.merge_datasets(), so it can be used as is:
+
+        merged = db.load_training_data()
+        X_full, X_safe, y = dp.build_feature_sets(merged)
+
+    refund_value is included only because merge_datasets() includes it; it is
+    never a model feature (build_features() does not use it).
+    """
+    engine = engine or get_engine()
+    with engine.connect() as conn:
+        df = pd.read_sql(text(TRAINING_QUERY), conn,
+                         parse_dates=["order_date", "first_order_datetime"])
+    # MySQL returns BOOLEAN as 0/1 and TINYINT as small ints; match the cleaned data types
+    df["mobile_verified"] = df["mobile_verified"].astype(bool)
+    df["is_fraud"] = df["is_fraud"].astype(int)
+    return df
 
 
 def main():
