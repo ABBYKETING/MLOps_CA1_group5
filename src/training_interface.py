@@ -1,9 +1,9 @@
 """PBI 5 task #48: one entry point for the eight existing member models.
 
 This adapter trains Safe features only and preserves each module's settings,
-preprocessing and threshold policy. It runs one algorithm at a time; ETL,
-RDS data preparation, the agreed
-retraining split and an all-model workflow are subsequent tasks.
+preprocessing and threshold policy. It runs one algorithm at a time; task #49's
+retraining_workflow.py calls it for all models. ETL integration, RDS data
+preparation and the agreed retraining split remain subsequent tasks.
 """
 
 import argparse

@@ -198,6 +198,7 @@ Eligibility fields are review metadata, not automatic registry promotion.
 Use a separate output directory for each pipeline execution in the later runner;
 reusing the same directory replaces its local artifacts. Batch identifiers and
 execution history are tasks #49/#51, not implemented by this single-model adapter.
+The task #49 workflow below now supplies separate execution directories and status reports.
 
 ### Task #48 verification
 
@@ -216,3 +217,106 @@ The tests require no RDS instance or MLflow server. A small verification summary
 is written to git-ignored `outputs/task48_contract_verification.json`; temporary
 model files are removed by the tests. This verifies the callable interface, not
 fraud-model quality, shared cloud logging or the full three-minute ETL requirement.
+
+## Automated model retraining workflow (PBI 5, task #49)
+
+`src/retraining_workflow.py` invokes every registered Safe model through the
+task #48 interface in one execution. It includes the two algorithms contributed
+by each of the four members. No notebook or individual model command is needed.
+Models run sequentially, preserving their existing settings and threshold rules.
+
+### One command for all eight models
+
+```powershell
+.venv\Scripts\python.exe src/retraining_workflow.py --data-dir data/processed
+```
+
+This requires an already prepared `features_base_safe.csv`. Before any training,
+the workflow copies it into the run directory, checks its hash, validates the
+features and target, and confirms both classes exist in every historical split.
+Every model reads that same snapshot, even if the original CSV later changes.
+The workflow does not append new records or generate new features.
+
+Options for development or targeted checks:
+
+```powershell
+.venv\Scripts\python.exe src/retraining_workflow.py --data-dir data/processed --sample-frac 0.02
+.venv\Scripts\python.exe src/retraining_workflow.py --models chu_extra_trees chu_lightgbm
+.venv\Scripts\python.exe src/retraining_workflow.py --stop-on-error
+```
+
+The default model list contains all eight algorithms. `--models` selects a subset
+explicitly. Sampled runs remain development checks and cannot enable MLflow.
+Existing member logging can be enabled with `--use-mlflow` and `--tracking-uri`;
+shared-server and batch-specific MLflow integration are still task #51.
+
+### Calling from another Python stage
+
+With `src` on the import path:
+
+```python
+from retraining_workflow import RetrainingFailed, run_retraining
+
+try:
+    report = run_retraining(data_dir="data/processed")
+except RetrainingFailed as error:
+    print(error.summary_path)
+    print(error.report["tasks"])
+    raise  # stop any subsequent stage that requires successful training
+```
+
+This callable entry point can be invoked after successful new-data processing.
+The actual RDS preparation and automatic ETL handoff are tasks #50 and #52;
+this PR does not claim to detect arriving data or connect to RDS by itself.
+The historical split is retained until the team agrees the retraining policy.
+
+### Run status, errors and repeatability
+
+Each invocation receives a generated UTC timestamp/UUID run ID. Optional
+`--run-id` values must be safe directory names; an existing run directory is
+rejected rather than overwritten. Outputs are stored under:
+
+```text
+outputs/retraining/<run-id>/
+    summary.json
+    input/features_base_safe.csv
+    models/<model-key>/<original-run-name>/...
+    <failed-model-key>_error.txt       # only when that model fails
+    input_error.txt                    # only when input preparation fails
+```
+
+`summary.json` records the input hash, row counts, model/member identity, overall
+status, per-task status, start/end times, durations, results and artifact paths.
+It is updated atomically before and after each model task.
+
+- A task moves from `pending` to `running`, then `completed` or `failed`.
+- A model failure records the exception and traceback. Remaining tasks run by
+  default so their outcomes can be inspected. The overall run still fails.
+- `--stop-on-error` skips the remaining tasks after the first model failure.
+- Invalid input skips every training task and records an input-stage failure.
+- Any input/model failure raises `RetrainingFailed` with the saved report.
+  The CLI exits **1**; success exits **0**; invalid arguments exit **2**.
+- Failed task artifacts may be incomplete; a failed report must not be treated
+  as a successful pipeline execution or a signal for model promotion.
+
+### Task #49 acceptance evidence
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -p test_retraining_workflow.py -v
+```
+
+| Acceptance criterion | Implementation and verification |
+|---|---|
+| Automatically invoke training scripts | One `run_retraining()` call or CLI command invokes registered functions |
+| Include all four members' training tasks | Default registry includes eight Safe models, two per member |
+| No manual per-model execution | Real integration test runs all eight through one workflow call |
+| Record each task's status | Persistent summary tracks pending, running, completed, failed and skipped states |
+| Informative failure messages | Exception details and traceback files are verified by controlled failure tests |
+| Repeatable execution | Two real all-model runs are verified, with distinct directories and retained artifacts; reusing a run ID is rejected |
+
+Tests also verify that invalid input prevents training, optional early stopping
+skips remaining model tasks, every task reads the same snapshot if the original
+file changes, and the CLI reports execution failure with exit code 1.
+The integration test uses synthetic Safe data and writes a small verification
+summary to `outputs/task49_workflow_verification.json`. It does not assess model
+quality, AWS service availability or the final three-minute end-to-end requirement.
