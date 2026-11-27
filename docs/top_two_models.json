@@ -1,0 +1,51 @@
+{
+  "selection_basis": "validation_only",
+  "precision_target": 0.7,
+  "precision_target_source": "Proposed technical comparison policy; not a stakeholder-mandated numeric requirement.",
+  "ranking_policy": "Maximum validation recall subject to minimum precision; ties broken by precision, AP and run name.",
+  "production_eligible": false,
+  "models": [
+    {
+      "rank": 1,
+      "proposed_role": "champion",
+      "run_name": "chu_extra_trees_safe_v1",
+      "run_id": "2ad5cf74f0f040d9841767e94331af10",
+      "model_uri": "models:/m-a28a6f67e51042948058e9d96bb2c509",
+      "team_member": "chu",
+      "algorithm": "extra_trees",
+      "dataset_version": "safe",
+      "dataset_sha256": "656a05ca11891816989d51eeaf4c706aab2e9b38682fdf2112baf91f4fc32b93",
+      "decision_threshold": 0.78125424937575,
+      "original_threshold": 0.6273964956169535,
+      "val_precision": 0.7004210059827166,
+      "val_recall": 0.16642973727162638,
+      "val_f1": 0.26895260784480557,
+      "val_pr_auc": 0.5135996116361755,
+      "val_alerts": 4513,
+      "val_tp": 3161,
+      "val_fp": 1352,
+      "production_eligible": false
+    },
+    {
+      "rank": 2,
+      "proposed_role": "challenger",
+      "run_name": "emi_decision_tree_safe_v1",
+      "run_id": "f6d5330039164615bdd37dea09df56d0",
+      "model_uri": "models:/m-8cf5204701264128b8e9eb066157ea78",
+      "team_member": "emi",
+      "algorithm": "decision_tree",
+      "dataset_version": "safe",
+      "dataset_sha256": "656a05ca11891816989d51eeaf4c706aab2e9b38682fdf2112baf91f4fc32b93",
+      "decision_threshold": 0.5660377358490566,
+      "original_threshold": 0.14,
+      "val_precision": 0.7022512708787219,
+      "val_recall": 0.15274048333596588,
+      "val_f1": 0.25090814737934614,
+      "val_pr_auc": 0.5159716559906874,
+      "val_alerts": 4131,
+      "val_tp": 2901,
+      "val_fp": 1230,
+      "production_eligible": false
+    }
+  ]
+}
