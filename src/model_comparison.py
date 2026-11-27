@@ -68,6 +68,7 @@ def fetch_official_runs(client, experiment_name):
     official = [
         run for run in runs
         if run.info.run_name in expected
+        and not run.data.tags.get("pipeline_run_id")
     ]
 
     actual = {

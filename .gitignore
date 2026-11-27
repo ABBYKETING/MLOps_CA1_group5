@@ -1,6 +1,7 @@
 .venv/
 .venv_backup/
 __pycache__/
+.pytest_cache/
 .ipynb_checkpoints/
 .env
 data/raw/

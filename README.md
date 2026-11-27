@@ -158,7 +158,8 @@ Only Safe runs, including when no `--datasets` option is supplied. Requests for
 `--datasets full` or both datasets are rejected. `--sample-frac` is optional for development checks
 and must retain both classes in every split. Sampled runs cannot enable MLflow.
 MLflow is off by default; `--use-mlflow` delegates to the existing member logger.
-Shared-server and per-execution logging integration are verified in task #51.
+The workflow's per-execution logging and verification commands are described in
+task #51 below; direct adapter calls retain the member logger's original behaviour.
 
 For a caller with `src` on its Python import path:
 
@@ -250,7 +251,7 @@ Options for development or targeted checks:
 The default model list contains all eight algorithms. `--models` selects a subset
 explicitly. Sampled runs remain development checks and cannot enable MLflow.
 Existing member logging can be enabled with `--use-mlflow` and `--tracking-uri`;
-shared-server and batch-specific MLflow integration are still task #51.
+task #51 now adds pipeline/model links, execution tags and strict server configuration.
 
 ### Calling from another Python stage
 
@@ -481,3 +482,174 @@ Local evidence is retained under
 Outputs remain git-ignored. Live preparation after loading a new school batch
 remains to be verified; the existing local tests already cover combined records
 and later batches moving the date windows. No RDS rows were changed by these checks.
+
+## Automated MLflow logging (PBI 5, task #51)
+
+The retraining workflow reuses the team's `mlflow_utils.py` and each member's
+existing model logger. Enabling `--use-mlflow` creates one parent execution run
+and one linked child run for each requested Safe model (eight by default).
+Existing model configurations, preprocessing, threshold rules and model-version
+labels remain unchanged.
+
+### Shared server configuration
+
+Use the PBI 3 server documented in `mlflow_server/local_deploy/README.md`: a shared
+Docker MLflow 3.18.0 server accessed through private Tailscale HTTPS. The host,
+Docker and Tailscale must be running. Your individual account needs EDIT access
+to the existing `SP-buy-Fraud-Detection` experiment. MLflow credentials are
+separate from the AWS RDS credentials.
+
+Set these in the PowerShell session used to run the workflow, replacing the
+address and username with the details provided privately by the server owner:
+
+```powershell
+$env:MLFLOW_TRACKING_URI = 'https://YOUR_SHARED_TAILSCALE_HOST'
+$env:MLFLOW_TRACKING_USERNAME = 'YOUR_INDIVIDUAL_USERNAME'
+$env:MLFLOW_TRACKING_PASSWORD = [System.Net.NetworkCredential]::new('', (Read-Host 'MLflow password' -AsSecureString)).Password
+```
+
+The workflow requires an explicit configured shared HTTPS address and account.
+It checks the server/experiment before data preparation or model training.
+Missing settings, connection failures, authentication errors or insufficient
+permissions fail the execution; they never silently switch to local storage.
+Keep credentials out of URLs, source files and commits.
+
+Prepare the current RDS data and train/log all eight Safe models:
+
+```powershell
+.venv\Scripts\python.exe src/retraining_workflow.py --from-database --use-mlflow
+```
+
+An existing prepared snapshot can be supplied with `--data-dir` instead of
+`--from-database`. Keep its CSV and task #50 metadata together. This mode does not
+require RDS to remain running. `--tracking-uri` optionally overrides the tracking
+URI environment variable; authentication still comes from environment variables.
+Omitting `--use-mlflow` retains local-only training.
+
+### Execution identity and recorded information
+
+The parent run name is `retraining_<pipeline_run_id>`. Child run names retain
+`{member}_{algorithm}_safe_{model_version}` and add tags identifying their
+`pipeline_run_id`, `model_key`, member, algorithm, model version, tracking location
+and optional ETL `batch_name`. MLflow's parent/child links group each execution
+in the UI. `v1` continues to describe the existing model configuration; each
+newly fitted model has its own new MLflow run ID and model URI.
+
+Each child records:
+
+- Existing model hyperparameters, decision threshold, threshold rule and feature count.
+- Validation/Test precision, recall, F1, accuracy, average precision (`pr_auc`),
+  ROC-AUC and confusion-matrix counts; existing extra member metrics are retained.
+- A trained model in the shared skops format, its signature and approved trust types.
+- Validation/Test confusion-matrix and precision-recall plots, feature importance,
+  feature names, input provenance and the final model result JSON.
+
+The parent stores input metadata, the execution summary, duration and completed,
+failed/skipped model counts. Provenance includes the data checksum, source,
+feature schema, row counts and split policy; task #50 inputs also supply the
+actual split boundaries and class counts. The full CSV containing customer/order
+identifiers is not uploaded. Local summaries include parent/child run IDs,
+model URIs and clickable UI links.
+
+Every invocation creates fresh server records. Reusing an existing local run
+directory, an existing server pipeline ID, an active MLflow run or
+`MLFLOW_RUN_ID` is rejected to prevent accidental resumption/overwriting.
+Model/logging failures are recorded; the parent execution is FAILED when any
+required task or final logging step fails. Remaining tasks follow the existing
+`--stop-on-error` policy. Password/token values are redacted from saved errors.
+
+An optional `--batch-name` identifies the source ETL batch after it has loaded
+successfully. `--verification-run` marks a shared-server check as verification,
+with `selection_candidate=false`. This prevents synthetic checks from becoming
+model-selection candidates. Automatic registration/promotion is not performed.
+The original PBI 3 baseline comparison excludes runs tagged with a pipeline ID,
+so new retraining runs with the same team names do not invalidate its fixed
+16-run historical comparison.
+
+### Verify recorded runs and UI access
+
+After a successful execution, use the printed output directory's summary path:
+
+```powershell
+.venv\Scripts\python.exe src/verify_retraining_logging.py --summary outputs/retraining/YOUR_RUN_ID/summary.json
+```
+
+This reads the existing server records without creating runs or retraining.
+It checks execution/model identities, parameters, metrics, required artifacts,
+model descriptors and parent/child membership. It also checks that the server
+serves the MLflow UI HTML using the configured account. Evidence is saved beside
+the execution in `mlflow_verification.json`.
+
+Open the generated `parent_run_url` in a browser, sign in with your individual
+account and expand the child runs. Confirm model metrics/artifacts are visible.
+Run another execution and confirm its parent/child IDs differ and the earlier
+records remain accessible. HTML/API checks do not replace this visual check on
+the actual shared server.
+
+### Isolated local verification
+
+Local HTTP server testing must be explicitly enabled with `--local-mlflow`,
+alongside `--use-mlflow` and a loopback HTTP(S) `--tracking-uri`. These runs are
+marked as verification and are not selection candidates. SQLite/file URIs are
+not accepted as silent replacements for the shared server. Sampled runs still
+cannot enable MLflow.
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -p test_retraining_tracking.py -v
+```
+
+The integration suite starts and stops its own isolated HTTP MLflow server and
+temporary SQLite/artifact store. It trains/logs all eight real models twice on
+synthetic data, downloads and reloads all eight model artifacts, verifies metrics,
+tags, plots, model metadata and unique execution IDs, and exercises configuration,
+input, model-artifact and final-report logging failures. It also verifies that
+the original shared logger still works outside a pipeline context. No RDS or
+shared MLflow instance is contacted. `pytest` is needed separately to run the
+existing `tests/test_model_comparison.py` regression suite.
+
+Local evidence is saved to git-ignored `outputs/task51_logging_verification.json`.
+For another deployment, repeat the shared-server and browser checks using the
+server owner's provided address/account. The completed live check is recorded below.
+
+### Live shared-server verification — 27 November 2026
+
+Task #51 was verified against the team's authenticated shared HTTPS server using
+an individual account with EDIT permission on experiment **2**,
+`SP-buy-Fraud-Detection`. The existing prepared RDS snapshot supplied **949,872
+labelled orders and 31 Safe features**; RDS was not contacted during this check.
+
+| Execution | Parent MLflow run ID | Models logged | Execution time |
+|---|---|---:|---:|
+| `task51_shared_all_20261127T115644Z` | `78d1407153554b66886e86aa0f593178` | All eight Safe algorithms | 549.63 s |
+| `task51_shared_repeat_20261127T115644Z` | `94a3c2e32329444bab78232a8f69306c` | LightGBM repeated on the same snapshot | 81.01 s |
+
+Both executions finished successfully with new parent/child run IDs and trained
+model URIs. Read-back checks matched the reported model parameters, thresholds,
+Validation/Test metrics, data checksum and required artifacts. A rendered browser
+check confirmed the metrics, parameters, artifact trees and confusion-matrix
+previews for all eight models and the repeated LightGBM run, plus both execution
+pages. These timings cover model execution/logging in this environment, not ETL
+or a complete automatically triggered pipeline.
+
+The before/after audit verified that all **23 pre-existing experiment records**
+were unchanged, the original **16 official baseline runs** remained available to
+the comparison code, and the existing **one registered model, two versions and
+champion/challenger aliases** were unchanged. Verification runs have
+`selection_candidate=false`; no registry promotion was performed.
+
+The live test exposed a Windows redirected-console issue: MLflow's decorative
+Unicode run-link output could raise `UnicodeEncodeError` on cp1252 streams after
+successful logging. The workflow now suppresses that SDK output during its
+execution and restores the caller's setting afterward; explicit UI URLs remain
+in the reports. A strict cp1252 HTTP integration test verifies the fix. The
+interrupted attempt remains recorded as FAILED for traceability; the successful
+checks use the new execution IDs above. A transient DNS failure during read-back
+was resolved by rerunning verification against the completed records, without
+retraining the first execution.
+
+The local regression/focused checks total **70 distinct passing tests**, including
+all eight models logged twice to an isolated HTTP server and model reloads.
+Live evidence and rendered UI screenshots remain local and git-ignored under
+`outputs/task51_shared_validation/20261127T114919_011773Z/`, including
+`shared_verification.json`, `ui_verification.json`, `before.json` and `after.json`.
+No credentials or private tracking hostname are included in these instructions.

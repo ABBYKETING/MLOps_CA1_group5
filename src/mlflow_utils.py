@@ -4,6 +4,8 @@ fraud detection project.
 """
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import mlflow
 import mlflow.sklearn
@@ -22,6 +24,26 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     PrecisionRecallDisplay
 )
+
+
+_RETRAINING_CONTEXT = ContextVar("mlflow_retraining_context", default=None)
+
+
+@contextmanager
+def retraining_run_context(*, experiment_id, parent_run_id, tags, on_start):
+    """Attach pipeline identity to existing member loggers for this task only.
+
+    Direct notebook/script calls retain the original team naming and behaviour.
+    The parent is created through MlflowClient, so it is not an active fluent run.
+    """
+    token = _RETRAINING_CONTEXT.set({
+        "experiment_id": experiment_id, "parent_run_id": parent_run_id,
+        "tags": dict(tags), "on_start": on_start,
+    })
+    try:
+        yield
+    finally:
+        _RETRAINING_CONTEXT.reset(token)
 
 def connect_mlflow(
     experiment_name="SP-buy-Fraud-Detection"
@@ -68,10 +90,24 @@ def start_model_run(
         "model_version": model_version
     }
 
-    return mlflow.start_run(
+    context = _RETRAINING_CONTEXT.get()
+    options = {}
+    if context is not None:
+        tags.update(context["tags"])
+        options = {"experiment_id": context["experiment_id"],
+                   "parent_run_id": context["parent_run_id"]}
+    run = mlflow.start_run(
         run_name=run_name,
-        tags=tags
+        tags=tags,
+        **options,
     )
+    if context is not None:
+        try:
+            context["on_start"](run.info.run_id)
+        except Exception:
+            mlflow.end_run(status="FAILED")
+            raise
+    return run
 
 def log_model_parameters(
     model_params,

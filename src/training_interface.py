@@ -163,7 +163,7 @@ def main():
                         help="PBI 5 supports Safe only (the default)")
     parser.add_argument("--params", help="JSON object overriding existing configuration keys")
     parser.add_argument("--sample-frac", type=float)
-    parser.add_argument("--use-mlflow", action="store_true", help="Off by default; logging integration is task #51")
+    parser.add_argument("--use-mlflow", action="store_true", help="Enable member logging; use retraining_workflow.py for pipeline tracking")
     parser.add_argument("--tracking-uri")
     parser.add_argument("--experiment", default=mu.DEFAULT_EXPERIMENT)
     args = parser.parse_args()
