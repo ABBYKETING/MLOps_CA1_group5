@@ -1,12 +1,14 @@
 """Prefect flow: automated new customer risk analytics (PBI 8, Task #68, Emi).
 
 Every run reads the LATEST data from the team's AWS RDS database and refreshes
-the three analyses from src/analytics_new_customer_emi.py (Task #62).
+the three analyses from src/analytics_new_customer_emi.py (Task #62). MySQL does
+the counting, so only a few dozen rows travel from RDS and a run takes seconds.
 
 Tasks, in the order they run:
 
-    1. load_latest_orders           read labelled orders + customer details from RDS (retries twice)
-    2. segment_customers            add account age, New/Established and high-value labels
+    1. load_high_value_cutoffs      ask RDS for the top-25% order value per country (retries twice)
+    2. count_orders_in_rds          let RDS count orders and frauds per account-age band,
+                                    mobile verification and value group (retries twice)
     3. analyse_account_age          Q1: first 30 days vs established customers
     4. analyse_mobile_verification  Q2: mobile verification among new customers
     5. analyse_high_value_orders    Q3: high-value orders from new vs established customers
@@ -43,45 +45,47 @@ FRESH = {"cache_policy": NO_CACHE}
 
 
 @task(retries=2, retry_delay_seconds=10, **FRESH)
-def load_latest_orders():
-    """Read the latest labelled orders from RDS (retried if the connection drops)."""
-    orders = analytics.load_orders()
-    get_run_logger().info("Loaded %s labelled orders from RDS (order dates %s to %s)", f"{len(orders):,}",
-                          orders["order_date"].min().date(), orders["order_date"].max().date())
-    return orders
+def load_high_value_cutoffs():
+    """The top-25% order value per country, computed by RDS (retried if the connection drops)."""
+    cutoffs = analytics.high_value_cutoffs()
+    get_run_logger().info("High-value cut-offs: %s",
+                          dict(zip(cutoffs["country_code"], cutoffs["high_value_cutoff"].round(2))))
+    return cutoffs
+
+
+@task(retries=2, retry_delay_seconds=10, **FRESH)
+def count_orders_in_rds(cutoffs):
+    """Orders and frauds per age band / verification / value group, counted by RDS."""
+    counts, overview = analytics.count_orders_in_db(cutoffs)
+    segments = counts.groupby("customer_segment")["orders"].sum().to_dict()
+    get_run_logger().info("Counted %s labelled orders in RDS (order dates %s to %s); segments: %s",
+                          f"{overview['orders']:,}", overview["first_order_date"].date(),
+                          overview["last_order_date"].date(), segments)
+    return counts, overview
 
 
 @task(**FRESH)
-def segment_customers(orders):
-    """Label each order New / Established and High / Normal value."""
-    segmented = analytics.add_customer_segments(orders)
-    counts = segmented["customer_segment"].value_counts().to_dict()
-    get_run_logger().info("Customer segments: %s", counts)
-    return segmented
-
-
-@task(**FRESH)
-def analyse_account_age(df):
+def analyse_account_age(counts):
     """Q1: fraud rate for customers in their first 30 days vs established customers."""
-    return analytics.q1_account_age(df)
+    return analytics.q1_account_age(counts)
 
 
 @task(**FRESH)
-def analyse_mobile_verification(df):
+def analyse_mobile_verification(counts):
     """Q2: fraud rate by mobile verification among new and established customers."""
-    return analytics.q2_mobile_verification(df)
+    return analytics.q2_mobile_verification(counts)
 
 
 @task(**FRESH)
-def analyse_high_value_orders(df):
+def analyse_high_value_orders(counts, cutoffs):
     """Q3: fraud rate of high-value orders from new vs established customers."""
-    return analytics.q3_high_value_orders(df)
+    return analytics.q3_high_value_orders(counts, cutoffs)
 
 
 @task(**FRESH)
-def save_reports(df, q1, q2, q3, output_dir):
+def save_reports(counts, overview, q1, q2, q3, output_dir):
     """Write tables (CSV), charts (PNG) and summary.md to the output folder."""
-    files = analytics.save_outputs(df, q1, q2, q3, output_dir)
+    files = analytics.save_outputs(counts, overview, q1, q2, q3, output_dir)
     get_run_logger().info("Saved %d files to %s", len(files), Path(output_dir).resolve())
     return {name: str(path) for name, path in files.items()}
 
@@ -92,9 +96,9 @@ def _table_rows(table):
 
 
 @task(**FRESH)
-def publish_results(df, q1, q2, q3, files):
+def publish_results(counts, overview, q1, q2, q3, files):
     """Log the findings and publish them as artifacts in the Prefect UI."""
-    summary = analytics.summary_text(df, q1, q2, q3)
+    summary = analytics.summary_text(counts, overview, q1, q2, q3)
     logger = get_run_logger()
     for line in summary.splitlines():
         if line.strip():
@@ -116,13 +120,13 @@ def publish_results(df, q1, q2, q3, files):
 @flow(name="new-customer-risk-analytics-emi", log_prints=True)
 def new_customer_risk_flow(output_dir: str = str(analytics.DEFAULT_OUTPUT_DIR)):
     """Refresh the three new customer risk analyses from the latest RDS data."""
-    orders = load_latest_orders()
-    df = segment_customers(orders)
-    q1 = analyse_account_age(df)
-    q2 = analyse_mobile_verification(df)
-    q3 = analyse_high_value_orders(df)
-    files = save_reports(df, q1, q2, q3, output_dir)
-    return publish_results(df, q1, q2, q3, files)
+    cutoffs = load_high_value_cutoffs()
+    counts, overview = count_orders_in_rds(cutoffs)
+    q1 = analyse_account_age(counts)
+    q2 = analyse_mobile_verification(counts)
+    q3 = analyse_high_value_orders(counts, cutoffs)
+    files = save_reports(counts, overview, q1, q2, q3, output_dir)
+    return publish_results(counts, overview, q1, q2, q3, files)
 
 
 def main():

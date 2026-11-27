@@ -21,6 +21,12 @@ Definitions (documented for the individual submission):
                     (prices differ a lot between countries, so one global
                     cut-off would mostly flag MY/PH orders)
 
+How the data is read: MySQL does the counting. RDS sends back only the
+high-value cut-off per country and the number of orders and frauds per
+(account age band, mobile verification, value) group - a few dozen rows
+instead of ~950,000 orders - so the run stays far below the 3-minute limit.
+pandas then builds the tables, matplotlib/seaborn the charts.
+
 Usage (from the repository root, with DB_HOST, DB_USER and DB_PASSWORD set):
 
     python src/analytics_new_customer_emi.py
@@ -51,54 +57,144 @@ NEW_CUSTOMER_DAYS = 30
 HIGH_VALUE_QUANTILE = 0.75
 NEW, ESTABLISHED, UNKNOWN = "New (0-30 days)", "Established (>30 days)", "Unknown age"
 HIGH, NORMAL = "High value (top 25%)", "Normal value"
-AGE_BANDS = [(-np.inf, 0, "Same day"), (0, 7, "1-7 days"), (7, 30, "8-30 days"),
-             (30, 90, "31-90 days"), (90, 180, "91-180 days"), (180, 365, "181-365 days"),
-             (365, np.inf, "Over 1 year")]
+# (upper limit in days, label); a band covers ages above the previous limit up to its own
+AGE_BANDS = [(0, "Same day"), (7, "1-7 days"), (30, "8-30 days"), (90, "31-90 days"),
+             (180, "91-180 days"), (365, "181-365 days"), (None, "Over 1 year")]
+BAND_ORDER = [label for _, label in AGE_BANDS]
+NEW_BANDS = [label for limit, label in AGE_BANDS if limit is not None and limit <= NEW_CUSTOMER_DAYS]
+UNKNOWN_BAND = "Unknown"
+COUNT_COLUMNS = ["age_band", "mobile_verified", "value_segment", "orders", "frauds"]
 
 
 # ---------------------------------------------------------------------------
-# Data
+# Reading the data (MySQL does the counting)
 # ---------------------------------------------------------------------------
-# Only the 7 columns the three questions need, unsorted: much less to download from
-# RDS than the full training query, so the flow stays well inside the 3-minute limit.
-ANALYTICS_QUERY = """
-    SELECT l.country_code, l.order_id, l.is_fraud, o.order_value, o.order_date,
-           c.mobile_verified, c.first_order_datetime
+LABELLED_ORDERS = """
     FROM fraud_labels l
     JOIN orders o    ON o.country_code = l.country_code AND o.order_id = l.order_id
     JOIN customers c ON c.country_code = l.country_code AND c.customer_id = l.customer_id
 """
 
+# 75th percentile of order_value per country, interpolated like pandas' quantile():
+# position (n - 1) * 0.75 in the sorted values, between the values at its floor and ceiling.
+CUTOFF_QUERY = f"""
+    WITH ranked AS (
+        SELECT o.country_code, o.order_value,
+               ROW_NUMBER() OVER (PARTITION BY o.country_code ORDER BY o.order_value) - 1 AS pos,
+               COUNT(*) OVER (PARTITION BY o.country_code) AS n
+        {LABELLED_ORDERS}
+    )
+    SELECT country_code,
+           MAX(CASE WHEN pos = FLOOR((n - 1) * {HIGH_VALUE_QUANTILE}) THEN order_value END) AS lower_value,
+           MAX(CASE WHEN pos = CEIL((n - 1) * {HIGH_VALUE_QUANTILE}) THEN order_value END) AS upper_value,
+           MAX((n - 1) * {HIGH_VALUE_QUANTILE} - FLOOR((n - 1) * {HIGH_VALUE_QUANTILE})) AS fraction
+    FROM ranked
+    WHERE pos IN (FLOOR((n - 1) * {HIGH_VALUE_QUANTILE}), CEIL((n - 1) * {HIGH_VALUE_QUANTILE}))
+    GROUP BY country_code
+    ORDER BY country_code
+"""
 
-def load_orders(engine=None):
-    """Latest labelled orders with the order and customer details needed, straight from RDS."""
+def _age_band_sql():
+    age = "DATEDIFF(o.order_date, DATE(c.first_order_datetime))"
+    cases = [f"WHEN c.first_order_datetime IS NULL OR {age} < 0 THEN '{UNKNOWN_BAND}'"]
+    cases += [f"WHEN {age} <= {limit} THEN '{label}'" for limit, label in AGE_BANDS if limit is not None]
+    return "CASE " + " ".join(cases) + f" ELSE '{AGE_BANDS[-1][1]}' END"
+
+
+def high_value_cutoffs(engine=None):
+    """Per country: the 75th percentile of order_value, and the value an order needs to reach it."""
     engine = engine or db.get_engine()
     with engine.connect() as conn:
-        df = pd.read_sql(text(ANALYTICS_QUERY), conn, parse_dates=["order_date", "first_order_datetime"])
-    df["mobile_verified"] = df["mobile_verified"].astype(bool)
-    df["is_fraud"] = df["is_fraud"].astype(int)
-    return df
+        cutoffs = pd.read_sql(text(CUTOFF_QUERY), conn)
+    cutoffs["fraction"] = cutoffs["fraction"].astype(float)
+    cutoffs["high_value_cutoff"] = (cutoffs["lower_value"]
+                                    + (cutoffs["upper_value"] - cutoffs["lower_value"]) * cutoffs["fraction"])
+    # The cut-off lies strictly between two neighbouring values unless the fraction is 0,
+    # so "order_value >= cutoff" is exactly "order_value >= this value" (no rounding issues)
+    cutoffs["threshold_value"] = np.where(cutoffs["fraction"] == 0, cutoffs["lower_value"], cutoffs["upper_value"])
+    return cutoffs
 
 
-def add_customer_segments(orders):
-    """Add account_age_days, customer_segment, age_band and value_segment."""
+def count_orders_in_db(cutoffs, engine=None):
+    """Orders and frauds per (age band, mobile verification, value) group, counted by MySQL."""
+    engine = engine or db.get_engine()
+    params, whens = {}, []
+    for i, row in enumerate(cutoffs.itertuples()):
+        params[f"c{i}"], params[f"t{i}"] = row.country_code, float(row.threshold_value)
+        whens.append(f"WHEN :c{i} THEN :t{i}")
+    threshold = f"CASE o.country_code {' '.join(whens)} END"
+    query = f"""
+        SELECT {_age_band_sql()} AS age_band,
+               c.mobile_verified AS mobile_verified,
+               CASE WHEN o.order_value >= {threshold} THEN '{HIGH}' ELSE '{NORMAL}' END AS value_segment,
+               COUNT(*) AS orders, SUM(l.is_fraud) AS frauds,
+               MIN(o.order_date) AS first_order_date, MAX(o.order_date) AS last_order_date
+        {LABELLED_ORDERS}
+        GROUP BY age_band, mobile_verified, value_segment
+    """
+    with engine.connect() as conn:
+        counts = pd.read_sql(text(query), conn, params=params)
+    return _tidy_counts(counts), _overview(counts)
+
+
+def load_counts(engine=None):
+    """Everything the analysis needs from RDS: (group counts, overview, high-value cut-offs)."""
+    engine = engine or db.get_engine()
+    cutoffs = high_value_cutoffs(engine)
+    counts, overview = count_orders_in_db(cutoffs, engine)
+    return counts, overview, cutoffs
+
+
+def count_orders(orders):
+    """The same group counts, computed in pandas from one row per labelled order.
+
+    Used by the tests (and handy for small data); it applies exactly the
+    definitions the SQL above applies inside MySQL.
+    """
     df = orders.copy()
-    age = (df["order_date"] - df["first_order_datetime"].dt.normalize()).dt.days
-    df["account_age_days"] = age
+    age = (pd.to_datetime(df["order_date"]) - pd.to_datetime(df["first_order_datetime"]).dt.normalize()).dt.days
+    band = pd.Series(UNKNOWN_BAND, index=df.index, dtype=object)
     known = age.notna() & (age >= 0)
-    df["customer_segment"] = np.select(
-        [known & (age <= NEW_CUSTOMER_DAYS), known & (age > NEW_CUSTOMER_DAYS)],
-        [NEW, ESTABLISHED], default=UNKNOWN)
-    band = pd.Series(pd.NA, index=df.index, dtype="object")
-    for low, high, label in AGE_BANDS:
-        band[known & (age > low) & (age <= high)] = label
-    df["age_band"] = pd.Categorical(band, categories=[b[2] for b in AGE_BANDS], ordered=True)
-    cutoff = df.groupby("country_code")["order_value"].transform(
-        lambda values: values.quantile(HIGH_VALUE_QUANTILE))
+    lower = -1
+    for limit, label in AGE_BANDS:
+        in_band = known & (age > lower) & ((age <= limit) if limit is not None else True)
+        band[in_band] = label
+        lower = limit
+    cutoff = df.groupby("country_code")["order_value"].transform(lambda v: v.quantile(HIGH_VALUE_QUANTILE))
+    df["age_band"] = band
     df["value_segment"] = np.where(df["order_value"] >= cutoff, HIGH, NORMAL)
-    return df
+    counts = (df.groupby(["age_band", "mobile_verified", "value_segment"])
+                .agg(orders=("is_fraud", "size"), frauds=("is_fraud", "sum"),
+                     first_order_date=("order_date", "min"), last_order_date=("order_date", "max"))
+                .reset_index())
+    cutoffs = (df.groupby("country_code")["order_value"].quantile(HIGH_VALUE_QUANTILE)
+                 .rename("high_value_cutoff").reset_index())
+    return _tidy_counts(counts), _overview(counts), cutoffs
 
 
+def _tidy_counts(counts):
+    counts = counts.copy()
+    counts["mobile_verified"] = counts["mobile_verified"].astype(int).astype(bool)
+    counts["orders"] = counts["orders"].astype(int)
+    counts["frauds"] = counts["frauds"].astype(int)
+    counts["customer_segment"] = np.select(
+        [counts["age_band"].isin(NEW_BANDS), counts["age_band"] == UNKNOWN_BAND],
+        [NEW, UNKNOWN], default=ESTABLISHED)
+    counts["age_band"] = pd.Categorical(counts["age_band"], categories=BAND_ORDER + [UNKNOWN_BAND], ordered=True)
+    return (counts.sort_values(["age_band", "mobile_verified", "value_segment"])
+                  .reset_index(drop=True)[COUNT_COLUMNS + ["customer_segment"]])
+
+
+def _overview(counts):
+    """Totals and order-date range over all labelled orders, from the group counts."""
+    return {"orders": int(counts["orders"].sum()), "frauds": int(counts["frauds"].sum()),
+            "first_order_date": pd.Timestamp(pd.to_datetime(counts["first_order_date"]).min()),
+            "last_order_date": pd.Timestamp(pd.to_datetime(counts["last_order_date"]).max())}
+
+
+# ---------------------------------------------------------------------------
+# The three questions (all work on the group counts)
+# ---------------------------------------------------------------------------
 def wilson_interval(frauds, orders, z=1.96):
     """95% confidence interval for a fraud rate (works for small groups too)."""
     frauds, orders = np.asarray(frauds, float), np.asarray(orders, float)
@@ -109,45 +205,42 @@ def wilson_interval(frauds, orders, z=1.96):
     return np.clip(centre - half, 0, 1), np.clip(centre + half, 0, 1)
 
 
-def fraud_summary(df, by):
-    """Orders, frauds, fraud rate (%), its 95% interval and share of all fraud, per group."""
-    table = (df.groupby(by, observed=True)["is_fraud"]
-               .agg(orders="size", frauds="sum").reset_index())
+def fraud_summary(counts, by):
+    """Orders, frauds, fraud rate (%), its 95% interval and shares, per group."""
+    table = counts.groupby(by, observed=True)[["orders", "frauds"]].sum().reset_index()
     low, high = wilson_interval(table["frauds"], table["orders"])
     table["fraud_rate_pct"] = 100 * table["frauds"] / table["orders"]
     table["ci_low_pct"], table["ci_high_pct"] = 100 * low, 100 * high
-    table["share_of_orders_pct"] = 100 * table["orders"] / len(df)
-    table["share_of_all_fraud_pct"] = 100 * table["frauds"] / df["is_fraud"].sum()
+    table["share_of_orders_pct"] = 100 * table["orders"] / counts["orders"].sum()
+    table["share_of_all_fraud_pct"] = 100 * table["frauds"] / counts["frauds"].sum()
     return table
 
 
-# ---------------------------------------------------------------------------
-# The three questions
-# ---------------------------------------------------------------------------
-def q1_account_age(df):
+def q1_account_age(counts):
     """Q1: fraud rate for new vs established customers, and by account age band."""
-    by_segment = fraud_summary(df, "customer_segment")
-    by_band = fraud_summary(df[df["customer_segment"] != UNKNOWN], "age_band")
-    rate = by_segment.set_index("customer_segment")["fraud_rate_pct"]
-    share = by_segment.set_index("customer_segment")
+    by_segment = fraud_summary(counts, "customer_segment")
+    known = counts[counts["customer_segment"] != UNKNOWN]
+    by_band = fraud_summary(known, "age_band")
+    by_band["age_band"] = by_band["age_band"].astype(str)
+    seg = by_segment.set_index("customer_segment")
     findings = {
-        "new_fraud_rate_pct": rate.get(NEW, np.nan),
-        "established_fraud_rate_pct": rate.get(ESTABLISHED, np.nan),
-        "times_higher": rate.get(NEW, np.nan) / rate.get(ESTABLISHED, np.nan),
-        "new_share_of_orders_pct": share.loc[NEW, "share_of_orders_pct"] if NEW in share.index else np.nan,
-        "new_share_of_fraud_pct": share.loc[NEW, "share_of_all_fraud_pct"] if NEW in share.index else np.nan,
+        "new_fraud_rate_pct": seg.loc[NEW, "fraud_rate_pct"] if NEW in seg.index else np.nan,
+        "established_fraud_rate_pct": seg.loc[ESTABLISHED, "fraud_rate_pct"] if ESTABLISHED in seg.index else np.nan,
+        "new_share_of_orders_pct": seg.loc[NEW, "share_of_orders_pct"] if NEW in seg.index else np.nan,
+        "new_share_of_fraud_pct": seg.loc[NEW, "share_of_all_fraud_pct"] if NEW in seg.index else np.nan,
     }
+    findings["times_higher"] = findings["new_fraud_rate_pct"] / findings["established_fraud_rate_pct"]
     return {"by_segment": by_segment, "by_age_band": by_band, "findings": findings}
 
 
-def q2_mobile_verification(df):
+def q2_mobile_verification(counts):
     """Q2: fraud rate by mobile verification, for new and established customers."""
-    known = df[df["customer_segment"] != UNKNOWN]
+    known = counts[counts["customer_segment"] != UNKNOWN]
     table = fraud_summary(known, ["customer_segment", "mobile_verified"])
     new = table[table["customer_segment"] == NEW].set_index("mobile_verified")
-    new_customers = known["customer_segment"] == NEW
+    new_orders = new["orders"].sum()
     findings = {
-        "new_verified_pct": 100 * known.loc[new_customers, "mobile_verified"].mean(),
+        "new_verified_pct": 100 * new.loc[True, "orders"] / new_orders if True in new.index else 0.0,
         "new_unverified_orders": int(new.loc[False, "orders"]) if False in new.index else 0,
         "new_unverified_fraud_rate_pct": new.loc[False, "fraud_rate_pct"] if False in new.index else np.nan,
         "new_verified_fraud_rate_pct": new.loc[True, "fraud_rate_pct"] if True in new.index else np.nan,
@@ -155,14 +248,12 @@ def q2_mobile_verification(df):
     return {"table": table, "findings": findings}
 
 
-def q3_high_value_orders(df):
+def q3_high_value_orders(counts, cutoffs):
     """Q3: fraud rate of high-value vs normal orders, for new and established customers."""
-    known = df[df["customer_segment"] != UNKNOWN]
+    known = counts[counts["customer_segment"] != UNKNOWN]
     table = fraud_summary(known, ["customer_segment", "value_segment"])
-    baseline = table.query("customer_segment == @ESTABLISHED and value_segment == @NORMAL")["fraud_rate_pct"]
+    baseline = table[(table["customer_segment"] == ESTABLISHED) & (table["value_segment"] == NORMAL)]["fraud_rate_pct"]
     table["times_established_normal"] = table["fraud_rate_pct"] / (baseline.iloc[0] if len(baseline) else np.nan)
-    cutoffs = (df.groupby("country_code")["order_value"].quantile(HIGH_VALUE_QUANTILE)
-                 .rename("high_value_cutoff").reset_index())
     pick = table.set_index(["customer_segment", "value_segment"])
     findings = {}
     if (NEW, HIGH) in pick.index:
@@ -170,11 +261,11 @@ def q3_high_value_orders(df):
         findings = {
             "new_high_value_fraud_rate_pct": row["fraud_rate_pct"],
             "new_high_value_orders": int(row["orders"]),
-            "new_high_value_share_of_orders_pct": 100 * row["orders"] / len(df),
-            "new_high_value_share_of_fraud_pct": 100 * row["frauds"] / df["is_fraud"].sum(),
-            "overall_fraud_rate_pct": 100 * df["is_fraud"].mean(),
+            "new_high_value_share_of_orders_pct": 100 * row["orders"] / counts["orders"].sum(),
+            "new_high_value_share_of_fraud_pct": 100 * row["frauds"] / counts["frauds"].sum(),
+            "overall_fraud_rate_pct": 100 * counts["frauds"].sum() / counts["orders"].sum(),
         }
-    return {"table": table, "cutoffs": cutoffs, "findings": findings}
+    return {"table": table, "cutoffs": cutoffs[["country_code", "high_value_cutoff"]], "findings": findings}
 
 
 # ---------------------------------------------------------------------------
@@ -202,16 +293,16 @@ def _grouped_bars(ax, table, x, hue, x_order, hue_order, colours):
 
 
 def plot_q1(result, overall_rate, path):
-    table = result["by_age_band"].sort_values("age_band")
+    table = result["by_age_band"]
     fig, ax = plt.subplots(figsize=(10, 5))
-    colours = ["#c0392b" if band in ("Same day", "1-7 days", "8-30 days") else "#7f8c8d"
-               for band in table["age_band"]]
-    ax.bar(table["age_band"].astype(str), table["fraud_rate_pct"], color=colours)
+    colours = ["#c0392b" if band in NEW_BANDS else "#7f8c8d" for band in table["age_band"]]
+    ax.bar(table["age_band"], table["fraud_rate_pct"], color=colours)
     for i, row in enumerate(table.itertuples()):
         ax.annotate(f"{row.fraud_rate_pct:.1f}%", (i, row.fraud_rate_pct), ha="center", va="bottom",
                     fontsize=9, xytext=(0, 2), textcoords="offset points")
-    ax.axhline(overall_rate, color="black", linestyle="--", linewidth=1)
-    ax.text(2.6, overall_rate, f"overall {overall_rate:.1f}%", va="bottom", ha="left", fontsize=9)
+    ax.axhline(overall_rate, color="black", linestyle="--", linewidth=1,
+               label=f"Overall fraud rate {overall_rate:.1f}%")
+    ax.legend(frameon=False, loc="upper right")
     ax.set(title="Q1. Fraud rate falls as customer accounts get older\n(red = new customers, first 30 days)",
            xlabel="Customer account age on the order date", ylabel="Fraud rate (%)")
     fig.tight_layout()
@@ -253,15 +344,16 @@ def plot_q3(result, path):
 # ---------------------------------------------------------------------------
 # Summary and full run
 # ---------------------------------------------------------------------------
-def summary_text(df, q1, q2, q3):
+def summary_text(counts, overview, q1, q2, q3):
     """Plain-English findings for analysts (also shown in the Prefect flow)."""
     f1, f2, f3 = q1["findings"], q2["findings"], q3["findings"]
-    unknown = int((df["customer_segment"] == UNKNOWN).sum())
+    unknown = int(counts.loc[counts["customer_segment"] == UNKNOWN, "orders"].sum())
     lines = [
         "# New customer risk analytics",
         "",
-        f"Data: {len(df):,} labelled orders from RDS, order dates {df['order_date'].min():%d %b %Y} "
-        f"to {df['order_date'].max():%d %b %Y}; overall fraud rate {100 * df['is_fraud'].mean():.1f}%. "
+        f"Data: {overview['orders']:,} labelled orders from RDS, order dates "
+        f"{overview['first_order_date']:%d %b %Y} to {overview['last_order_date']:%d %b %Y}; "
+        f"overall fraud rate {100 * overview['frauds'] / overview['orders']:.1f}%. "
         f"{unknown:,} orders have a missing or invalid first-order date and are left out of the comparisons.",
         "",
         "## Q1. Are customers in their first 30 days riskier?",
@@ -294,7 +386,7 @@ def summary_text(df, q1, q2, q3):
     return "\n".join(lines)
 
 
-def save_outputs(df, q1, q2, q3, output_dir):
+def save_outputs(counts, overview, q1, q2, q3, output_dir):
     """Write tables (CSV), charts (PNG) and the summary (Markdown). Returns the file paths."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -315,19 +407,23 @@ def save_outputs(df, q1, q2, q3, output_dir):
     q3["table"].round(2).to_csv(files["q3_table"], index=False)
     q3["cutoffs"].round(2).to_csv(files["q3_cutoffs"], index=False)
     sns.set_theme(style="whitegrid")
-    plot_q1(q1, 100 * df["is_fraud"].mean(), files["q1_chart"])
+    plot_q1(q1, 100 * overview["frauds"] / overview["orders"], files["q1_chart"])
     plot_q2(q2, files["q2_chart"])
     plot_q3(q3, files["q3_chart"])
-    files["summary"].write_text(summary_text(df, q1, q2, q3), encoding="utf-8")
+    files["summary"].write_text(summary_text(counts, overview, q1, q2, q3), encoding="utf-8")
     return files
 
 
+def analyse(counts, overview, cutoffs, output_dir=DEFAULT_OUTPUT_DIR):
+    """Answer Q1-Q3 from the group counts and save everything."""
+    q1, q2, q3 = q1_account_age(counts), q2_mobile_verification(counts), q3_high_value_orders(counts, cutoffs)
+    files = save_outputs(counts, overview, q1, q2, q3, output_dir)
+    return {"counts": counts, "overview": overview, "q1": q1, "q2": q2, "q3": q3, "files": files}
+
+
 def run_analysis(output_dir=DEFAULT_OUTPUT_DIR, engine=None):
-    """Load the latest data from RDS, answer Q1-Q3 and save everything."""
-    df = add_customer_segments(load_orders(engine))
-    q1, q2, q3 = q1_account_age(df), q2_mobile_verification(df), q3_high_value_orders(df)
-    files = save_outputs(df, q1, q2, q3, output_dir)
-    return {"data": df, "q1": q1, "q2": q2, "q3": q3, "files": files}
+    """Read the latest counts from RDS, answer Q1-Q3 and save everything."""
+    return analyse(*load_counts(engine), output_dir=output_dir)
 
 
 def main():
@@ -335,7 +431,7 @@ def main():
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Where to save tables and charts")
     args = parser.parse_args()
     result = run_analysis(args.output_dir)
-    print(summary_text(result["data"], result["q1"], result["q2"], result["q3"]))
+    print(summary_text(result["counts"], result["overview"], result["q1"], result["q2"], result["q3"]))
     print(f"\nSaved tables and charts to {Path(args.output_dir).resolve()}")
 
 
