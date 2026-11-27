@@ -1,7 +1,7 @@
 """PBI 5 task #49: execute all eight Safe model tasks with one command.
 
-Consumes prepared features; RDS preparation, new split rules and ETL triggering
-remain tasks #50/#52. Each invocation keeps its own input snapshot and report.
+Consumes prepared features, or prepares combined RDS data with --from-database
+(task #50). Each invocation keeps its own input snapshot and report.
 """
 
 import argparse
@@ -54,17 +54,30 @@ def _save_report(report, path):
     temporary.replace(path)
 
 
-def _prepare_input(data_dir, run_dir):
+def _prepare_input(data_dir, run_dir, *, from_database=False, engine=None):
     """Freeze and validate one Safe feature file for every model in this run."""
-    source = mu.dataset_path("safe", data_dir).resolve()
-    before = mu.file_sha256(source)
     input_dir = run_dir / "input"
-    input_dir.mkdir()
     snapshot = input_dir / "features_base_safe.csv"
-    shutil.copyfile(source, snapshot)
+    if from_database:
+        from retraining_data import prepare_retraining_data
+        prepare_retraining_data(output_dir=input_dir, engine=engine)
+        source = snapshot
+    else:
+        source = mu.dataset_path("safe", data_dir).resolve()
+        before = mu.file_sha256(source)
+        input_dir.mkdir()
+        shutil.copyfile(source, snapshot)
+        source_metadata = source.with_suffix(".metadata.json")
+        if source_metadata.is_file():
+            metadata_hash = mu.file_sha256(source_metadata)
+            copied_metadata = snapshot.with_suffix(".metadata.json")
+            shutil.copyfile(source_metadata, copied_metadata)
+            if (mu.file_sha256(copied_metadata) != metadata_hash
+                    or mu.file_sha256(source_metadata) != metadata_hash):
+                raise ValueError("Safe metadata changed while being copied; retry with a stable dataset")
+        if mu.file_sha256(snapshot) != before or mu.file_sha256(source) != before:
+            raise ValueError("Safe input changed while being copied; retry with a stable prepared dataset")
     checksum = mu.file_sha256(snapshot)
-    if checksum != before or mu.file_sha256(source) != before:
-        raise ValueError("Safe input changed while being copied; retry with a stable prepared dataset")
     frame = mu.load_feature_data(snapshot)
     snapshots = sorted(set(frame.columns).intersection(SNAPSHOT_FEATURES))
     if snapshots:
@@ -74,18 +87,24 @@ def _prepare_input(data_dir, run_dir):
     for name in ("Train", "Validation", "Test"):
         y = frame.loc[labels == name, mu.TARGET]
         if y.nunique() != 2:
-            raise ValueError(f"{name} must contain both classes under the existing chronological split")
+            raise ValueError(f"{name} must contain both classes under the prepared chronological split")
         counts[name] = len(y)
-    return input_dir, {
+    info = {
         "status": "completed", "source": str(source), "snapshot": str(snapshot),
         "sha256": checksum, "rows": counts, "feature_count": len(mu.get_feature_columns(frame)),
     }
+    if "preparation_metadata" in frame.attrs:
+        info["preparation"] = frame.attrs["preparation_metadata"]
+        info["metadata_path"] = str(snapshot.with_suffix(".metadata.json"))
+        info["metadata_sha256"] = mu.file_sha256(info["metadata_path"])
+    return input_dir, info
 
 
 def run_retraining(*, data_dir=None, output_dir=DEFAULT_OUTPUT_DIR,
                    model_keys=None, run_id=None, sample_frac=None,
                    stop_on_error=False, use_mlflow=False,
-                   experiment=mu.DEFAULT_EXPERIMENT, tracking_uri=None):
+                   experiment=mu.DEFAULT_EXPERIMENT, tracking_uri=None,
+                   from_database=False, engine=None):
     """Run all registered Safe models, returning a completed execution report.
 
     All eight algorithms run by default. model_keys optionally selects models
@@ -96,7 +115,13 @@ def run_retraining(*, data_dir=None, output_dir=DEFAULT_OUTPUT_DIR,
 
     No fitted models are retained in memory across tasks: artifacts are saved by
     task #48. A fresh directory is required for each run_id to avoid overwrites.
+    from_database=True reads the combined RDS state and applies the agreed
+    expanding/28-day/28-day split. data_dir cannot be supplied in that mode.
     """
+    if from_database and data_dir is not None:
+        raise ValueError("Choose from_database=True or data_dir, not both")
+    if engine is not None and not from_database:
+        raise ValueError("engine requires from_database=True")
     if isinstance(model_keys, str):
         raise ValueError("model_keys must be a sequence, not a string")
     keys = list(MODEL_REGISTRY) if model_keys is None else list(model_keys)
@@ -123,6 +148,7 @@ def run_retraining(*, data_dir=None, output_dir=DEFAULT_OUTPUT_DIR,
     report = {
         "run_id": run_id, "status": "running", "started_at": _now(), "finished_at": None,
         "dataset_type": "safe", "sample_frac": sample_frac, "use_mlflow": use_mlflow,
+        "from_database": from_database,
         "output_dir": str(run_dir), "input": {"status": "pending"},
         "tasks": [{"model_key": key, "member": MODEL_REGISTRY[key].member,
                    "status": "pending", "started_at": None, "finished_at": None,
@@ -131,7 +157,7 @@ def run_retraining(*, data_dir=None, output_dir=DEFAULT_OUTPUT_DIR,
     _save_report(report, summary_path)
     print(f"Retraining {run_id}: {len(keys)} Safe model tasks", flush=True)
     try:
-        input_dir, input_info = _prepare_input(data_dir, run_dir)
+        input_dir, input_info = _prepare_input(data_dir, run_dir, from_database=from_database, engine=engine)
         report["input"] = input_info
     except Exception as error:
         error_file = run_dir / "input_error.txt"
@@ -187,7 +213,10 @@ def run_retraining(*, data_dir=None, output_dir=DEFAULT_OUTPUT_DIR,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--data-dir")
+    source.add_argument("--from-database", action="store_true",
+                        help="Prepare combined RDS data with moving 28-day validation/test windows")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--models", nargs="+", choices=MODEL_REGISTRY)
     parser.add_argument("--run-id")
@@ -200,7 +229,8 @@ def main():
     try:
         run_retraining(data_dir=args.data_dir, output_dir=args.output_dir, model_keys=args.models,
                        run_id=args.run_id, sample_frac=args.sample_frac, stop_on_error=args.stop_on_error,
-                       use_mlflow=args.use_mlflow, tracking_uri=args.tracking_uri, experiment=args.experiment)
+                       use_mlflow=args.use_mlflow, tracking_uri=args.tracking_uri, experiment=args.experiment,
+                       from_database=args.from_database)
     except ValueError as error:
         parser.error(str(error))
     except RetrainingFailed as error:

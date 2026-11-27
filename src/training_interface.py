@@ -2,8 +2,8 @@
 
 This adapter trains Safe features only and preserves each module's settings,
 preprocessing and threshold policy. It runs one algorithm at a time; task #49's
-retraining_workflow.py calls it for all models. ETL integration, RDS data
-preparation and the agreed retraining split remain subsequent tasks.
+retraining_workflow.py calls it for all models. Task #50 prepares RDS data and
+records the agreed split in a checked metadata file; ETL integration is task #52.
 """
 
 import argparse
@@ -102,6 +102,9 @@ def run_model(model_key, *, data_dir=None, datasets=("safe",),
 
     config = get_model_config(model_key, params)
     safe_path = mu.dataset_path("safe", data_dir)
+    metadata_path = safe_path.with_suffix(".metadata.json")
+    preparation = (json.loads(metadata_path.read_text(encoding="utf-8"))
+                   if metadata_path.is_file() else None)
     columns = pd.read_csv(safe_path, nrows=0).columns
     snapshots = sorted(set(columns).intersection(SNAPSHOT_FEATURES))
     if snapshots:
@@ -129,6 +132,8 @@ def run_model(model_key, *, data_dir=None, datasets=("safe",),
             if not required.issubset(result[period]):
                 raise RuntimeError(f"{model_key}/{dataset} is missing standard {period} metrics")
         result["model_key"] = model_key
+        if preparation is not None:
+            result["data_preparation"] = preparation
         result.setdefault("model_version", mu.MODEL_VERSION)
         result.setdefault("selection_candidate", dataset == "safe" and sample_frac is None)
         # Retain member eligibility policy; sampled runs are never promoted
