@@ -141,9 +141,10 @@ metadata, labels and `refund_value` from model inputs. The adapter also rejects 
 Safe file that contains any excluded snapshot features. Abby's modules retain their original numeric
 precision; the other modules retain the shared float32 preparation.
 
-The existing historical split remains unchanged. The team-approved retraining
-split and combined RDS feature preparation belong to task #50; running this
-interface alone does not cause new orders to enter the training split.
+Existing files without preparation metadata retain the historical split.
+Task #50's RDS preparation writes a checked metadata file alongside the CSV;
+the shared loader uses its expanding/28-day/28-day split for all eight models.
+Running this interface alone does not fetch new records from RDS.
 
 From the repository root using the project's virtual environment:
 
@@ -231,11 +232,12 @@ Models run sequentially, preserving their existing settings and threshold rules.
 .venv\Scripts\python.exe src/retraining_workflow.py --data-dir data/processed
 ```
 
-This requires an already prepared `features_base_safe.csv`. Before any training,
+This command requires an already prepared `features_base_safe.csv`. Before any training,
 the workflow copies it into the run directory, checks its hash, validates the
-features and target, and confirms both classes exist in every historical split.
+features and target, and confirms both classes exist in every split. Task #50's
+preparation metadata, when present, is copied and checked with the CSV.
 Every model reads that same snapshot, even if the original CSV later changes.
-The workflow does not append new records or generate new features.
+Use `--from-database` below to prepare current RDS records before training.
 
 Options for development or targeted checks:
 
@@ -266,9 +268,8 @@ except RetrainingFailed as error:
 ```
 
 This callable entry point can be invoked after successful new-data processing.
-The actual RDS preparation and automatic ETL handoff are tasks #50 and #52;
-this PR does not claim to detect arriving data or connect to RDS by itself.
-The historical split is retained until the team agrees the retraining policy.
+Task #50 adds RDS preparation via `--from-database` (see below). The automatic
+ETL handoff remains task #52; this runner does not detect arriving data by itself.
 
 ### Run status, errors and repeatability
 
@@ -320,3 +321,163 @@ file changes, and the CLI reports execution failure with exit code 1.
 The integration test uses synthetic Safe data and writes a small verification
 summary to `outputs/task49_workflow_verification.json`. It does not assess model
 quality, AWS service availability or the final three-minute end-to-end requirement.
+
+## Combined RDS retraining data (PBI 5, task #50)
+
+`src/retraining_data.py` prepares the current combined historical and new labelled
+data from RDS. It calls Emi's `database.load_training_data()` once, joining labels
+to orders by `(country_code, order_id)` and customers by
+`(country_code, customer_id)`. The loader parses both date columns and returns
+only labelled orders with matching customer/order details.
+
+PBI 4 already applies the shared cleaning/validation rules before loading RDS.
+RDS retains one current record per key: later batches update existing orders,
+customers and corrected fraud labels. Preparation reads that combined state;
+it does not append the new CSV again, drop duplicate orders silently, or modify
+the database. Duplicate order keys in the join stop preparation.
+
+### Agreed chronological retraining split
+
+The latest valid **labelled order date in the data**, rather than today's date,
+anchors each run. All orders on the same calendar date stay together:
+
+| Partition | Date range |
+|---|---|
+| Train | All records before the validation window; history expands over time |
+| Validation | The 28 calendar days immediately before the test window |
+| Test | The latest 28 calendar days, including the anchor date |
+
+For example, when the latest order date is **31 May 2024**, Train ends on
+**5 April**, Validation covers **6 April–3 May**, and Test covers **4–31 May**.
+Newer orders initially remain outside model fitting. As later dated orders
+arrive, older validation/test records can enter training. Late-arriving records
+are assigned by their order date, not the batch arrival date. Rerunning the same
+database state gives the same partitions.
+
+An empty partition, invalid order date, or a partition missing either fraud or
+non-fraud stops preparation. Windows are never silently widened or replaced by
+a random split. Row counts, fraud/non-fraud counts, fraud rates and actual date
+ranges are saved so the team can assess whether each window has enough fraud
+examples for useful evaluation; having both classes alone does not guarantee
+statistically reliable metrics.
+
+All eight models use the same dates and input snapshot in a run. Their existing
+settings, preprocessing and validation threshold rules are preserved. No test
+rows are passed to model fitting or threshold selection. Test windows change
+between runs, so new metrics are not directly comparable to the original PBI 2
+scores or to earlier runs on different orders. Historical test records that later
+enter training must not be reused as an independent historical benchmark.
+
+### Safe feature preparation and provenance
+
+Preparation reuses `data_processing.build_feature_sets()` with the same PBI 1
+feature transformations and fixed category encoding. Only the 31 Safe features
+are saved for training. `refund_value` and the ten excluded customer-snapshot
+features are absent from prediction inputs. IDs, order dates and the label remain
+metadata/target columns, never prediction features.
+
+Each new output directory contains:
+
+```text
+features_base_safe.csv
+features_base_safe.metadata.json
+```
+
+The filename retains `base` for compatibility with the existing model interfaces;
+its content is the combined RDS state at preparation time. Keep both files
+together. The JSON stores the source type, UTC preparation time, CSV SHA-256,
+feature schema, excluded feature names, split boundaries and class counts.
+The shared loader verifies these against the actual CSV before attaching the
+split policy to the loaded DataFrame. All eight models, including Abby's custom
+split functions, use that policy through `create_split_labels()`.
+
+The workflow freezes both files in its run directory, records preparation details
+in `summary.json`, and includes them in each local model `result.json`. Existing
+directories cannot be overwritten. A database/preparation failure skips every
+model and is recorded through the existing workflow error reporting.
+
+RDS holds current records, without historical customer snapshots or historical
+label-availability timestamps. This approach cannot reconstruct exactly what was
+known at every past prediction time. Safe feature exclusions reduce the identified
+risks; they do not prove every remaining feature has point-in-time availability.
+
+### Execution
+
+Set the usual `DB_HOST`, `DB_USER`, `DB_PASSWORD`, optional `DB_PORT` and
+`DB_NAME=spbuy` environment variables. RDS must be running and permit your IP.
+Do not put credentials in code, commands committed to Git, or preparation metadata.
+
+Prepare a snapshot without training (the output directory must be new):
+
+```powershell
+.venv\Scripts\python.exe src/retraining_data.py --output-dir outputs/prepared/demo01
+```
+
+Prepare from RDS and run all eight Safe models in one command:
+
+```powershell
+.venv\Scripts\python.exe src/retraining_workflow.py --from-database
+```
+
+Or train from a previously prepared snapshot and its metadata:
+
+```powershell
+.venv\Scripts\python.exe src/retraining_workflow.py --data-dir outputs/prepared/demo01
+```
+
+`--from-database` and `--data-dir` are mutually exclusive. Without either flag,
+the existing prepared-file default remains available. MLflow is still optional;
+these commands do not require it unless `--use-mlflow` is supplied.
+
+For an orchestration caller with `src` on the import path:
+
+```python
+from retraining_workflow import run_retraining
+
+report = run_retraining(from_database=True)
+```
+
+### Task #50 verification
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -p test_retraining_data.py -v
+.venv\Scripts\python.exe -m unittest discover -s tests -p test_database.py -v
+```
+
+The new tests exercise the actual shared SQL join against local SQLite and train
+all eight real models on synthetic Safe features using the moving split. They
+cover composite keys, date boundaries, expanding history after new rows arrive,
+corrected labels, excluded features, class counts, unchanged historical defaults,
+snapshot preservation, tampered metadata, invalid/insufficient inputs and database
+failure reporting. The existing database tests verify join parity and parsed dates.
+Local evidence is saved to git-ignored `outputs/task50_data_verification.json`.
+These checks do not verify live AWS connectivity, real-data model quality or the
+final end-to-end runtime requirement.
+
+### Live RDS verification — 27 November 2026
+
+The read-only preparation check passed against the team's AWS RDS MySQL 8.4.11
+instance. It retrieved **949,872** complete labelled orders and saved **31 Safe
+features**. Reloading the generated CSV passed the checksum, feature schema,
+split boundaries and partition-count validation. Preparation plus CSV reload
+took **79.68 seconds** in this execution; this is not an end-to-end pipeline or
+all-model training runtime measurement.
+
+| Partition | Actual order dates | Rows | Fraud | Non-fraud |
+|---|---|---:|---:|---:|
+| Train | 12 November 2022–16 March 2023 | 671,218 | 68,405 | 602,813 |
+| Validation | 17 March–13 April 2023 | 134,532 | 18,182 | 116,350 |
+| Test | 14 April–11 May 2023 | 144,122 | 17,835 | 126,287 |
+
+The batch log contained only `base` with status `completed`. A separate read-only
+preflight of the school's `*_test.csv` files confirmed that none of their order
+or label keys was stored yet. At the checked state, ETL would insert 100 customers
+and 104 orders; 97 labels have matching parents and 7 would be rejected for
+missing customers. These are preflight expectations, not reported database writes.
+
+Local evidence is retained under
+`outputs/prepared/rds_check_20261127T094904_155924Z/` in `verification.json` and
+`school_batch_preflight.json`, alongside the prepared CSV and metadata.
+Outputs remain git-ignored. Live preparation after loading a new school batch
+remains to be verified; the existing local tests already cover combined records
+and later batches moving the date windows. No RDS rows were changed by these checks.

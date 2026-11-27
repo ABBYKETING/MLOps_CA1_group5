@@ -33,7 +33,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-from data_split import create_split_labels
+from data_split import create_split_labels, rolling_split_policy, split_summary
 
 RANDOM_SEED = 42
 TARGET = "is_fraud"
@@ -98,6 +98,7 @@ def get_feature_columns(df):
 
 def load_feature_data(path):
     """Load one processed feature CSV and check it is safe to train on."""
+    path = Path(path)
     df = pd.read_csv(path, dtype=ID_DTYPES)
 
     missing = [c for c in META_COLS + [TARGET] if c not in df.columns]
@@ -112,6 +113,27 @@ def load_feature_data(path):
     values = df[features].to_numpy(dtype=float)
     if not np.isfinite(values).all():
         raise ValueError("Missing or infinite values found in feature columns")
+    # Task #50's sidecar binds the agreed split/provenance to these exact bytes.
+    # Existing PBI 2 files without a sidecar retain the historical split.
+    metadata_path = path.with_suffix(".metadata.json")
+    if metadata_path.is_file():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if (metadata.get("schema_version") != 1
+                or metadata.get("dataset_type") != "safe"
+                or metadata.get("source") != "rds_current_state"):
+            raise ValueError("Unsupported retraining data metadata")
+        if metadata.get("sha256") != file_sha256(path):
+            raise ValueError("Retraining data checksum does not match its metadata")
+        if metadata.get("features") != features:
+            raise ValueError("Retraining feature schema does not match its metadata")
+        if metadata.get("total_rows") != len(df) or metadata.get("feature_count") != len(features):
+            raise ValueError("Retraining row/feature counts do not match the data")
+        if metadata.get("split") != rolling_split_policy(df):
+            raise ValueError("Retraining split metadata does not match the order dates")
+        df.attrs["retraining_split"] = metadata["split"]
+        if metadata.get("partitions") != split_summary(df):
+            raise ValueError("Retraining partition counts do not match the data")
+        df.attrs["preparation_metadata"] = metadata
     return df
 
 
