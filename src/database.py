@@ -139,7 +139,6 @@ TRAINING_QUERY = """
     FROM fraud_labels l
     JOIN orders o    ON o.country_code = l.country_code AND o.order_id = l.order_id
     JOIN customers c ON c.country_code = l.country_code AND c.customer_id = l.customer_id
-    ORDER BY o.order_date, l.country_code, l.order_id
 """
 
 
@@ -165,7 +164,9 @@ def load_training_data(engine=None):
     # MySQL returns BOOLEAN as 0/1 and TINYINT as small ints; match the cleaned data types
     df["mobile_verified"] = df["mobile_verified"].astype(bool)
     df["is_fraud"] = df["is_fraud"].astype(int)
-    return df
+    # Sorted here rather than with ORDER BY: sorting ~950k joined rows on a small RDS
+    # instance is much slower than sorting them in pandas
+    return df.sort_values(["order_date", "country_code", "order_id"], kind="stable").reset_index(drop=True)
 
 
 def main():

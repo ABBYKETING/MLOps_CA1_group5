@@ -39,6 +39,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import seaborn as sns  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import database as db  # noqa: E402
@@ -58,9 +59,25 @@ AGE_BANDS = [(-np.inf, 0, "Same day"), (0, 7, "1-7 days"), (7, 30, "8-30 days"),
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
+# Only the 7 columns the three questions need, unsorted: much less to download from
+# RDS than the full training query, so the flow stays well inside the 3-minute limit.
+ANALYTICS_QUERY = """
+    SELECT l.country_code, l.order_id, l.is_fraud, o.order_value, o.order_date,
+           c.mobile_verified, c.first_order_datetime
+    FROM fraud_labels l
+    JOIN orders o    ON o.country_code = l.country_code AND o.order_id = l.order_id
+    JOIN customers c ON c.country_code = l.country_code AND c.customer_id = l.customer_id
+"""
+
+
 def load_orders(engine=None):
-    """Latest labelled orders with order and customer details, straight from RDS."""
-    return db.load_training_data(engine)
+    """Latest labelled orders with the order and customer details needed, straight from RDS."""
+    engine = engine or db.get_engine()
+    with engine.connect() as conn:
+        df = pd.read_sql(text(ANALYTICS_QUERY), conn, parse_dates=["order_date", "first_order_datetime"])
+    df["mobile_verified"] = df["mobile_verified"].astype(bool)
+    df["is_fraud"] = df["is_fraud"].astype(int)
+    return df
 
 
 def add_customer_segments(orders):
