@@ -36,7 +36,8 @@ def make_runs():
             info=SimpleNamespace(
                 run_name=name,
                 status="FINISHED",
-            )
+            ),
+            data=SimpleNamespace(tags={}),
         )
         for name in sorted(expected_run_names())
     ]
