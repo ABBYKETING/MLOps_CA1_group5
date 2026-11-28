@@ -1,0 +1,39 @@
+name: spbuy-mlflow-rds-test
+
+services:
+  mlflow:
+    build: .
+    image: spbuy-mlflow:rds-test
+    container_name: spbuy-mlflow-rds-test
+    restart: "no"
+    ports:
+      - "127.0.0.1:5007:5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: ${MLFLOW_RDS_BACKEND_URI:?Required}
+      MLFLOW_AUTH_CONFIG_PATH: /app/auth_config.ini
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SERVER_SECRET_KEY:?Required}
+      MLFLOW_SERVER_ALLOWED_HOSTS: ${MLFLOW_ALLOWED_HOSTS:?Required}
+      MLFLOW_SERVER_CORS_ALLOWED_ORIGINS: ${MLFLOW_CORS_ORIGINS:?Required}
+      MLFLOW_ENABLE_REMOTE_ASSISTANT: "false"
+    volumes:
+      - mlflow-data:/app/data
+      - ./auth_config.ini:/app/auth_config.ini:ro
+      - ./rds-ca.pem:/app/rds-ca.pem:ro
+    command:
+      - mlflow
+      - server
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "5000"
+      - --workers
+      - "1"
+      - --artifacts-destination
+      - /app/data/mlartifacts
+      - --serve-artifacts
+      - --app-name
+      - basic-auth
+
+volumes:
+  mlflow-data:
+    name: spbuy-mlflow-rds-test-data
