@@ -864,3 +864,12 @@ See [the Task #53 verification guide](docs/pipeline_verification.md) for the
 public school practice URLs, complete run command, repeatable evidence checker,
 failure tests and submission evidence. The task's ETL-only 180-second criterion
 is measured separately from the full retraining and shared-logging duration.
+
+## Chu's individual payment and order analytics (Task #63)
+
+The [analytics guide](docs/payment_order_analytics_chu.md) documents the three
+payment/value/collection questions, definitions, live RDS findings and reviewed
+figures. Run `src/analytics_payment_order_chu.py` for reusable analysis or open
+`notebooks/payment_order_analytics_chu.ipynb` for the executed explanatory version.
+Both read the latest labelled orders from the existing team RDS database using
+`DB_*` environment variables. The Prefect integration is a subsequent task.

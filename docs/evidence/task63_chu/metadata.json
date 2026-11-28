@@ -1,0 +1,29 @@
+{
+  "source": "team RDS business database; fraud_labels joined to orders",
+  "retrieved_at": "2026-11-28T16:22:34.779031+00:00",
+  "orders": 949969,
+  "frauds": 104433,
+  "all_orders": 949993,
+  "unlabelled_orders": 24,
+  "first_order_date": "2022-11-12",
+  "last_order_date": "2023-05-11",
+  "countries": [
+    "BD",
+    "MY",
+    "PH",
+    "PK",
+    "TH"
+  ],
+  "read_seconds": 24.14062049999484,
+  "run_id": "20261128T162210Z_720332f9",
+  "duration_seconds": 25.407075499999337,
+  "value_bands_sgd": [
+    "SGD 0",
+    "(0, 10]",
+    "(10, 25]",
+    "(25, 50]",
+    "(50, 100]",
+    "> SGD 100"
+  ],
+  "highlight_min_orders": 100
+}
