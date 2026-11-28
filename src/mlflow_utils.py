@@ -185,7 +185,17 @@ def log_trained_model(
     """
     Log a trained scikit-learn model or pipeline
     together with its input and output signature.
+
+    Automated retraining uses the source run's full member/algorithm/dataset/
+    version name, including for callers that supply a legacy short model name.
+    Direct notebook/script calls keep their existing model_name behaviour.
     """
+
+    if _RETRAINING_CONTEXT.get() is not None:
+        active_run = mlflow.active_run()
+        if active_run is None:
+            raise RuntimeError("Log the retraining model inside its active model run")
+        model_name = active_run.info.run_name
 
     signature = infer_signature(
         X_sample,
