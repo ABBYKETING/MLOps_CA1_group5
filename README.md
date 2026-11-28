@@ -106,6 +106,17 @@ The database test runs only when `ETL_TEST_DATABASE` names a separate practice d
 - **A bad file** (missing column, empty, not a UTF-8 CSV, unreachable URL) stops the run before anything is loaded.
 - **A database error** rolls back the whole batch and marks it `failed`; fix the problem and run the same command again.
 
+### Data quality monitoring (PBI 11)
+
+Every ETL run also checks the incoming files before cleaning (missing values, duplicates, invalid types, schema changes) with `src/data_quality.py`, and writes a report to `outputs/data_quality/<batch>/` (`report.md`, `quality_issues.csv`, `processing_summary.csv`), plus one row per dataset in `outputs/data_quality/history.csv` for comparing batches. A report is written even when a batch stops (missing column, unreadable file). Check files without loading them:
+
+```powershell
+python src/data_quality.py --data-dir <folder> --postfix XXX
+python -m unittest tests.test_data_quality -v
+```
+
+Checks, severities, report format and handling procedures: [`docs/data_quality_monitoring.md`](docs/data_quality_monitoring.md).
+
 ## Standardized model training (PBI 5, task #48)
 
 `src/training_interface.py` provides one callable interface and one CLI for the
