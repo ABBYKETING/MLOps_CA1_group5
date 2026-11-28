@@ -7,7 +7,7 @@ labelled rows for model retraining (PBI 5, Task #50).
 
 Connection settings come from environment variables, never from the code:
 
-    DB_HOST      RDS endpoint, e.g. spbuy-db.xxxx.us-east-1.rds.amazonaws.com
+    DB_HOST      RDS endpoint, e.g. YOUR_RDS_ENDPOINT
     DB_PORT      optional, default 3306
     DB_USER      database username
     DB_PASSWORD  database password
