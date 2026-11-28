@@ -269,8 +269,10 @@ except RetrainingFailed as error:
 ```
 
 This callable entry point can be invoked after successful new-data processing.
-Task #50 adds RDS preparation via `--from-database` (see below). The automatic
-ETL handoff remains task #52; this runner does not detect arriving data by itself.
+Task #50 adds RDS preparation via `--from-database` (see below).
+The task #52 entry point, `src/automated_pipeline.py`, calls this runner after
+successful URL extraction and RDS loading. This standalone runner does not
+detect arriving data by itself.
 
 ### Run status, errors and repeatability
 
@@ -479,9 +481,9 @@ missing customers. These are preflight expectations, not reported database write
 Local evidence is retained under
 `outputs/prepared/rds_check_20261127T094904_155924Z/` in `verification.json` and
 `school_batch_preflight.json`, alongside the prepared CSV and metadata.
-Outputs remain git-ignored. Live preparation after loading a new school batch
-remains to be verified; the existing local tests already cover combined records
-and later batches moving the date windows. No RDS rows were changed by these checks.
+Outputs remain git-ignored. These task #50 checks did not change RDS rows.
+The subsequent task #52 practice test below loaded the school batch and verified
+preparation of the combined historical and new records.
 
 ## Automated MLflow logging (PBI 5, task #51)
 
@@ -534,6 +536,13 @@ The parent run name is `retraining_<pipeline_run_id>`. Child run names retain
 and optional ETL `batch_name`. MLflow's parent/child links group each execution
 in the UI. `v1` continues to describe the existing model configuration; each
 newly fitted model has its own new MLflow run ID and model URI.
+
+New automated retraining executions also use that full child-run name for the
+saved model in MLflow's **Models** page, for example
+`chu_extra_trees_safe_v1` or `abby_random_forest_safe_v1`. This overrides legacy
+short model names within the pipeline; direct notebook/script logging keeps its
+existing behaviour. The installed MLflow API does not support renaming an
+existing logged-model entry, so earlier records retain their original names.
 
 Each child records:
 
@@ -653,3 +662,197 @@ Live evidence and rendered UI screenshots remain local and git-ignored under
 `outputs/task51_shared_validation/20261127T114919_011773Z/`, including
 `shared_verification.json`, `ui_verification.json`, `before.json` and `after.json`.
 No credentials or private tracking hostname are included in these instructions.
+
+## Integrated ETL and retraining (PBI 5, task #52)
+
+`src/automated_pipeline.py` accepts the three new CSV URLs and automatically
+runs the existing PBI 4 ETL, reads the committed combined RDS state, prepares
+the Safe features and chronological splits, then trains and logs all eight
+registered models to the shared MLflow server. Model configurations and
+threshold policies are the same as in tasks #48–#51.
+
+### Run the complete pipeline
+
+Activate the project environment and set the existing `DB_HOST`, `DB_PORT`,
+`DB_USER`, `DB_PASSWORD`, `DB_NAME` and shared `MLFLOW_TRACKING_*` environment
+variables in the same PowerShell session. The database must be running and
+allow your IP; the shared MLflow host, Docker and Tailscale must remain running
+throughout training and logging. Both services are checked before ETL writes.
+
+Replace the example URLs with the three supplied download addresses:
+
+```powershell
+.venv\Scripts\python.exe src/automated_pipeline.py --customers "https://YOUR_DATA_HOST/customers_BATCH.csv" --orders "https://YOUR_DATA_HOST/orders_BATCH.csv" --labels "https://YOUR_DATA_HOST/labels_BATCH.csv"
+```
+
+One command performs the full sequence; individual ETL/model scripts do not
+need to be run. Shared MLflow logging is automatic and required. The default
+model list contains the eight Safe algorithms from all four members. The
+database already contains historical records: the downloaded batch is upserted
+by ETL, then training reads the combined state once. The new CSVs are not
+appended again during preparation.
+
+The common filename postfix identifies the batch. For download URLs without
+these filenames, add an explicit `--batch-name BATCH`. An optional `--run-id`
+sets a fresh execution identifier; otherwise a timestamp and random suffix
+are generated. Existing local execution directories and MLflow pipeline IDs
+are rejected. Repeated batches keep ETL's existing update rules, while each
+pipeline invocation creates a separate report and separate experiment runs.
+
+### Stage ordering and failure handling
+
+| Stage | Required result before continuing |
+|---|---|
+| `preflight` | RDS responds; the authenticated shared experiment is accessible; the pipeline ID is unused |
+| `etl` | Extraction, validated cleaning/transformation and transactional RDS loading return successfully |
+| `load_validation` | The returned batch matches, is not a dry run, has at least one accepted inserted/updated label, and its RDS status is `completed` |
+| `retraining` | Combined RDS preparation, all requested Safe model tasks and shared MLflow logging complete successfully |
+
+The existing row rejection policy is preserved. Invalid individual rows can be
+rejected while valid rows load; the rejection counts/reasons remain in the ETL
+report. A failed ETL call blocks training even if an older completed marker
+exists for the same batch. A batch with zero accepted labels also blocks
+training. Preparation validates joins, unique order keys, Safe feature exclusions
+and chronological partition/class counts before fitting models.
+
+Any stage failure marks the execution failed and skips later stages. Model or
+logging failures stop the remaining model tasks. An ETL commit that succeeded
+is retained if a later training/logging stage fails; that batch remains
+`completed` in the ETL log, while the pipeline report records the later failure.
+After resolving the cause, a new invocation with a fresh pipeline ID can retry
+the same URLs using the normal upsert rules. CLI exit codes are 0 for complete
+success, 1 for an execution failure and 2 for invalid arguments.
+
+### Reports and experiment identity
+
+Each execution saves git-ignored evidence under:
+
+```text
+outputs/pipeline/<pipeline-id>/
+  summary.json
+  error.txt                         # only after a failure
+  raw/<batch>/                      # downloaded input CSVs
+  etl/<batch>_summary.json
+  retraining/<pipeline-id>/
+    summary.json                    # per-model results and MLflow links
+    input/                          # frozen Safe CSV and preparation metadata
+    models/                         # trained models, results and plots
+```
+
+The top-level summary records stage statuses, start/end times, durations, ETL
+counts and a reference to the detailed retraining report. The existing MLflow
+parent/child records carry the same pipeline ID plus the ETL batch tag, so
+executions of the same batch remain distinguishable. Existing historical runs,
+registered model versions and champion/challenger aliases are preserved.
+Passwords and supplied URL query strings are redacted from saved pipeline errors.
+
+Use `--verification-run` for practice checks: runs are tagged as verification
+and excluded from selection. `--models` may select a subset only in verification
+or explicit local-server mode; ordinary integrated executions use all eight.
+`--local-mlflow` explicitly targets an isolated loopback HTTP MLflow server for
+development and does not provide an automatic fallback from shared logging.
+
+After success, the existing read-back checker accepts the nested summary:
+
+```powershell
+.venv\Scripts\python.exe src/verify_retraining_logging.py --summary outputs/pipeline/YOUR_PIPELINE_ID/retraining/YOUR_PIPELINE_ID/summary.json
+```
+
+### Verification
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/test_automated_pipeline.py tests/test_database.py tests/test_retraining_data.py tests/test_etl_pipeline.py -q
+```
+
+The 12 pipeline tests cover stage ordering, all-eight invocation, actual HTTP
+download/cleaning, inserted and corrected labels, failed/dry-run/empty/stale
+batch gates, shared logging failures, independent execution IDs, report
+redaction and engine cleanup. MySQL-specific writes and model/logging calls
+are substituted in these local contract tests; they do not establish a live
+AWS/shared-server end-to-end pass. After merging the updated database loader,
+the pipeline, database, retraining-data and ETL regression suites were run
+together on 28 November 2026: **37 tests passed**, with one opt-in MySQL test
+skipped. These include all eight real Safe models trained locally on synthetic
+prepared data and checks of the SQL join and parsed dates.
+
+The authorised live practice test on 27 November 2026 served only the three
+school `*_test.csv` files through temporary loopback HTTP URLs. Actual ETL
+inserted **100 customers, 104 orders and 97 labels**, rejecting **7 labels**
+whose customers were missing. The RDS batch was confirmed completed before
+automatic retraining began. Combined preparation then produced **949,969
+labelled orders and 31 Safe features**: Train 671,286, Validation 134,547 and
+Test 144,136. The latest labelled order remained 11 May 2023, so this older
+arriving batch did not move the date windows.
+
+During the first model's shared logging, the remote HTTPS service stopped
+responding. The execution was recorded as failed and the remaining seven models
+were skipped. A separate RDS read-back confirmed the inserts and that both
+`base` and `test` batches remained completed. After connectivity returned on
+28 November, the two interrupted practice experiment records were finalised as
+FAILED to match the saved execution report. Their existing metrics/artifacts
+were retained. Evidence
+for this attempt is retained under
+`outputs/task52_live_validation/20261127T130307_022241Z/` and the corresponding
+`outputs/pipeline/pipeline_task52_practice_20261127T130307_022241Z/` reports.
+
+### Successful live integrated execution - 28 November 2026
+
+The same three practice files were served over temporary loopback HTTP URLs
+and supplied to one invocation of the integrated CLI. Execution
+`pipeline_task52_practice_20261128T142156_545552Z` completed all four stages and
+all eight Safe models without manually invoking any individual processing or
+training script.
+
+Because the records already existed from the earlier attempt, ETL updated
+100 customers, 104 orders and 97 valid labels, with **zero duplicate inserts**.
+The same 7 orphan labels were rejected. Database counts remained 901,412
+customers, 949,993 orders and 949,969 fraud labels; the 453 rejected-record
+rows and two batch records also remained unchanged. The `test` batch was
+confirmed completed before training began. All eight models consumed the same
+949,969-row, 31-feature Safe snapshot and the chronological partitions above.
+
+The shared experiment contains a new FINISHED parent run,
+`44e7e4006e7b4c698842aa7247e823eb`, linked to eight new FINISHED child runs.
+Each child identifies its model/member, pipeline ID, source batch and Safe data
+checksum. Practice records have `selection_candidate=false`. The before/after
+audit found **all 40 pre-existing experiment records unchanged**, together with
+both existing registered models, their four versions and all aliases.
+
+A rendered browser check confirmed the completed parent with eight successful
+children, the experiment listing, and Extra Trees parameters, metrics,
+artifact tree and confusion-matrix preview. Shared-server read-back passed for
+all eight models: identities, parameters, decision thresholds, Validation/Test
+metrics, required artifacts and downloadable model descriptors matched the
+saved results. Details are recorded alongside the execution in
+`mlflow_verification.json`.
+
+| Task #52 acceptance criterion | Verification |
+|---|---|
+| Connect retraining to PBI 4 ETL | The integrated command called the existing `run_etl()` and then `run_retraining()` |
+| Finish extraction, cleaning, transformation and RDS loading before training | Real committed `test` batch and timestamps verified; invalid/dry-run/incomplete batches blocked by tests |
+| Automatically retrain after successful labelled-data processing | All eight registered Safe tasks completed after 97 accepted label updates |
+| Automatically log experiments to shared MLflow | New parent plus eight child runs, parameters, metrics and model artifacts verified on the shared server |
+| Block dependent stages after earlier failure | ETL/preflight/load-validation/model/logging failures covered locally; the earlier live connection failure skipped the remaining seven models |
+| Start with the three CSV URLs without individual manual scripts | Actual integrated CLI argument parsing and HTTP downloads exercised in the live run |
+
+| Stage | Measured duration |
+|---|---:|
+| Service preflight | 6.50 s |
+| URL extraction, cleaning and RDS loading | 8.59 s |
+| Committed-batch validation | 0.99 s |
+| RDS feature preparation, eight models and shared logging | 543.66 s |
+| **Complete integrated pipeline** | **559.77 s (9 min 20 s)** |
+
+These timings cover the integrated command itself. Subsequent audit, artifact
+read-back and browser checks are separate validation work.
+
+Live evidence remains git-ignored under
+`outputs/task52_live_validation/20261128T142156_545552Z/`, including the source
+plan/checksums, before-state audit, `integration_verification.json`,
+`local_regression.json`, `ui_verification.json` and screenshots. Detailed model
+results and shared run/model links are in
+`outputs/pipeline/pipeline_task52_practice_20261128T142156_545552Z/retraining/pipeline_task52_practice_20261128T142156_545552Z/summary.json`.
+
+The brief's **three-minute total pipeline limit is not met**: the measured full
+execution took 559.77 seconds. Functional integration and performance compliance
+are separate findings; runtime optimisation remains necessary.

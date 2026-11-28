@@ -133,6 +133,8 @@ class TestMLflowLogging(unittest.TestCase):
         client = mlflow.MlflowClient()
 
         stored_run = client.get_run(run_id)
+        # Standalone callers retain the original shared helper's default name.
+        self.assertEqual(client.get_logged_model(model_info.model_id).name, "model")
 
         self.assertEqual(
             stored_run.info.status,
