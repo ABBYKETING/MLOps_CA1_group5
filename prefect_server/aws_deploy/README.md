@@ -1,5 +1,7 @@
 # Prefect server on AWS Elastic Beanstalk (Yue Liang, CA1 Part 2 F3)
 
+The flow itself can also run on AWS as a separate service: see [`../flow_service`](../flow_service/README.md) (#75).
+
 A self-hosted Prefect server running as a Docker container on AWS Elastic Beanstalk, with its
 run history stored in an AWS RDS **PostgreSQL** database. The flow
 `flows/geo_account_risk_flow_yueliang.py` still runs on the analyst's laptop (it reads the team's

@@ -26,7 +26,14 @@ Usage (from the repository root, with DB_HOST, DB_USER and DB_PASSWORD set):
     python -m prefect server start                         # terminal 1, UI at http://127.0.0.1:4200
     $env:PREFECT_API_URL = "http://127.0.0.1:4200/api"     # terminal 2 (plus the DB_* variables)
     python flows/geo_account_risk_flow_yueliang.py         # run once now
-    python flows/geo_account_risk_flow_yueliang.py --serve # keep running; refresh daily at 07:30
+    python flows/geo_account_risk_flow_yueliang.py --serve # keep running; refresh daily at 07:30 (Singapore)
+
+As a separate flow service (PBI 9 Task 4, #75): prefect_server/flow_service/ runs this file
+with --serve --webserver in its own Docker container on AWS Elastic Beanstalk. It registers
+the deployment "daily-geo-account-fraud-yueliang" on the AWS Prefect server, runs it on the
+schedule, and also runs it whenever someone clicks Run in the Prefect UI. --webserver opens a
+small health endpoint (/health on PREFECT_RUNNER_SERVER_PORT) so Elastic Beanstalk can tell
+that the service is alive.
 """
 
 import argparse
@@ -38,11 +45,13 @@ import numpy as np
 from prefect import flow, get_run_logger, task
 from prefect.artifacts import create_markdown_artifact, create_table_artifact
 from prefect.cache_policies import NO_CACHE
+from prefect.schedules import Cron
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import analytics_geo_account_yueliang as analytics  # noqa: E402
 
 DAILY_SCHEDULE = "30 7 * * *"      # 07:30 every day, before analysts start reviewing (only with --serve)
+SCHEDULE_TIMEZONE = "Asia/Singapore"
 DEMO_LIMIT_SECONDS = 180           # the interview demo must finish within 3 minutes
 DB_TASK = {"retries": 2, "retry_delay_seconds": 10, "cache_policy": NO_CACHE}
 NO_REUSE = {"cache_policy": NO_CACHE}   # always recompute from the latest data, never reuse old results
@@ -238,12 +247,17 @@ def geo_account_fraud_flow(output_dir: str = str(analytics.DEFAULT_OUTPUT_DIR)):
 def main():
     parser = argparse.ArgumentParser(description="Run the geographic and account behaviour fraud analytics flow")
     parser.add_argument("--serve", action="store_true",
-                        help=f"keep running and refresh on a schedule ({DAILY_SCHEDULE}); stop with Ctrl+C")
+                        help=f"keep running and refresh on a schedule ({DAILY_SCHEDULE} {SCHEDULE_TIMEZONE}); "
+                             "stop with Ctrl+C")
+    parser.add_argument("--webserver", action="store_true",
+                        help="with --serve: also open a /health endpoint (used by the AWS flow service)")
     parser.add_argument("--output-dir", default=str(analytics.DEFAULT_OUTPUT_DIR))
     args = parser.parse_args()
     if args.serve:
-        geo_account_fraud_flow.serve(name="daily-geo-account-fraud-yueliang", cron=DAILY_SCHEDULE,
-                                     parameters={"output_dir": args.output_dir})
+        geo_account_fraud_flow.serve(name="daily-geo-account-fraud-yueliang",
+                                     schedule=Cron(DAILY_SCHEDULE, timezone=SCHEDULE_TIMEZONE),
+                                     parameters={"output_dir": args.output_dir},
+                                     tags=["yueliang", "analytics"], webserver=args.webserver)
     else:
         geo_account_fraud_flow(output_dir=args.output_dir)
 
