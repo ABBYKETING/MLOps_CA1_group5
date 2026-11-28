@@ -14,6 +14,8 @@ Load (#45-#46)  write everything to the RDS tables in sql/schema.sql:
                 - labels whose order or customer does not exist are not loaded
                 - every row that could not be used goes to rejected_records with a reason
                 - the run is recorded in etl_batches
+Quality (#85)   every batch is checked before cleaning by data_quality.py; a report is
+                written to outputs/data_quality/<batch>/ (also when the batch stops)
 
 The whole load runs in ONE database transaction: if anything fails, nothing is
 half-loaded and the batch is marked "failed" in etl_batches.
@@ -45,10 +47,12 @@ import pandas as pd
 from sqlalchemy import text
 
 import data_processing as dp
+import data_quality as dq                              # PBI 11: data quality monitoring (#85)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RAW_DIR = REPO_ROOT / "data" / "raw"          # git-ignored
 DEFAULT_SUMMARY_DIR = REPO_ROOT / "outputs" / "etl"    # git-ignored
+DEFAULT_QUALITY_DIR = dq.DEFAULT_REPORT_DIR            # outputs/data_quality, git-ignored
 FILE_KINDS = ("customers", "orders", "labels")
 INSERT_CHUNK = 10000                                   # rows per INSERT statement batch
 
@@ -424,7 +428,7 @@ def load(engine, batch_name, cleaned, rejected, raw):
 # Whole pipeline
 # ---------------------------------------------------------------------------
 def run_etl(sources, batch_name=None, raw_dir=DEFAULT_RAW_DIR, dry_run=False, engine=None,
-            summary_dir=DEFAULT_SUMMARY_DIR):
+            summary_dir=DEFAULT_SUMMARY_DIR, quality_dir=DEFAULT_QUALITY_DIR):
     """Extract -> transform -> load one batch. Returns a summary dict (for Prefect / retraining)."""
     if batch_name is None:
         names = {batch_name_from_source(sources[kind]) for kind in FILE_KINDS}
@@ -436,12 +440,24 @@ def run_etl(sources, batch_name=None, raw_dir=DEFAULT_RAW_DIR, dry_run=False, en
     print(f"=== ETL batch '{batch_name}'")
 
     step = time.perf_counter()
-    raw = extract(sources, batch_name, raw_dir)
+    try:
+        raw = extract(sources, batch_name, raw_dir)
+    except Exception as err:                            # unreadable file, missing columns, failed download
+        dq.report_critical(batch_name, err, Path(raw_dir) / batch_name, report_dir=quality_dir, dry_run=dry_run)
+        raise
     timings["extract_seconds"] = time.perf_counter() - step
     print("Extracted:", {k: len(v) for k, v in raw.items()}, f"({timings['extract_seconds']:.1f}s)")
 
+    # PBI 11 (#85): check the files as received, before any cleaning
+    quality = dq.inspect_batch(raw)
+    print(dq.console_summary(quality))
+
     step = time.perf_counter()
-    cleaned, rejected = transform(raw)
+    try:
+        cleaned, rejected = transform(raw)
+    except Exception as err:                            # cleaned data failed the team's validation
+        dq.report_critical(batch_name, err, Path(raw_dir) / batch_name, quality, quality_dir, dry_run)
+        raise
     timings["transform_seconds"] = time.perf_counter() - step
     print("Cleaned:", {k: len(v) for k, v in cleaned.items()},
           f"| rejected by cleaning: {len(rejected)} ({timings['transform_seconds']:.1f}s)")
@@ -461,11 +477,17 @@ def run_etl(sources, batch_name=None, raw_dir=DEFAULT_RAW_DIR, dry_run=False, en
             counts, all_rejected = load(engine, batch_name, cleaned, rejected, raw)
         except Exception as err:
             fail_batch(engine, batch_name, err)
+            dq.report_critical(batch_name, err, Path(raw_dir) / batch_name, quality, quality_dir, dry_run)
             raise
         timings["load_seconds"] = time.perf_counter() - step
         summary.update(counts)
         summary["rejected_reasons"] = pd.Series([r["reason"] for r in all_rejected], dtype=object).value_counts().to_dict()
         print("Loaded:", counts, f"({timings['load_seconds']:.1f}s)")
+
+    rows_rejected_list = rejected if dry_run else all_rejected
+    summary["data_quality"] = dq.report_batch(batch_name, quality, summary["rows_read"], summary["rows_cleaned"],
+                                              rows_rejected_list, None if dry_run else counts, quality_dir, dry_run)
+    print(f"Data quality report: {summary['data_quality']['report_dir']}")
 
     timings["total_seconds"] = time.perf_counter() - start
     summary.update({k: round(v, 2) for k, v in timings.items()})
