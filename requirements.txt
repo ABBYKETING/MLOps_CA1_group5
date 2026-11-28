@@ -22,3 +22,6 @@ nbformat==5.11.1
 # Database (AWS RDS MySQL)
 SQLAlchemy==2.0.58
 PyMySQL==1.2.4
+
+# Workflow orchestration (individual analytics flows)
+prefect==3.9.5
