@@ -323,7 +323,7 @@ skips remaining model tasks, every task reads the same snapshot if the original
 file changes, and the CLI reports execution failure with exit code 1.
 The integration test uses synthetic Safe data and writes a small verification
 summary to `outputs/task49_workflow_verification.json`. It does not assess model
-quality, AWS service availability or the final three-minute end-to-end requirement.
+quality, AWS service availability or the final three-minute ETL requirement.
 
 ## Combined RDS retraining data (PBI 5, task #50)
 
@@ -455,7 +455,7 @@ snapshot preservation, tampered metadata, invalid/insufficient inputs and databa
 failure reporting. The existing database tests verify join parity and parsed dates.
 Local evidence is saved to git-ignored `outputs/task50_data_verification.json`.
 These checks do not verify live AWS connectivity, real-data model quality or the
-final end-to-end runtime requirement.
+final ETL performance requirement.
 
 ### Live RDS verification — 27 November 2026
 
@@ -853,6 +853,14 @@ plan/checksums, before-state audit, `integration_verification.json`,
 results and shared run/model links are in
 `outputs/pipeline/pipeline_task52_practice_20261128T142156_545552Z/retraining/pipeline_task52_practice_20261128T142156_545552Z/summary.json`.
 
-The brief's **three-minute total pipeline limit is not met**: the measured full
-execution took 559.77 seconds. Functional integration and performance compliance
-are separate findings; runtime optimisation remains necessary.
+The confirmed three-minute demonstration limit applies to **ETL only**, as
+clarified during Task #53 verification on 28 November 2026. This earlier run's
+8.59-second ETL stage passes that limit. Its 559.77-second total includes feature
+preparation, all eight models and shared logging and is reported separately.
+
+## Pipeline reliability and performance verification (PBI 5, task #53)
+
+See [the Task #53 verification guide](docs/pipeline_verification.md) for the
+public school practice URLs, complete run command, repeatable evidence checker,
+failure tests and submission evidence. The task's ETL-only 180-second criterion
+is measured separately from the full retraining and shared-logging duration.
