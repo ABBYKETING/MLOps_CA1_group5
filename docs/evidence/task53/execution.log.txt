@@ -1,0 +1,65 @@
+Pipeline pipeline_task53_public_20261128T151710_852143Z: preflight running
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+Pipeline pipeline_task53_public_20261128T151710_852143Z: etl running
+=== ETL batch 'test'
+Extracted: {'customers': 100, 'orders': 104, 'labels': 104} (0.2s)
+Cleaned: {'customers': 100, 'orders': 104, 'fraud_labels': 104} | rejected by cleaning: 0 (0.1s)
+Loaded: {'customers_inserted': 0, 'customers_updated': 100, 'orders_inserted': 0, 'orders_updated': 104, 'labels_inserted': 0, 'labels_updated': 97, 'rows_rejected': 7} (6.7s)
+Rejected rows by reason: {'customer not found': 7}
+Total time: 8.2s
+Pipeline pipeline_task53_public_20261128T151710_852143Z: load_validation running
+Pipeline pipeline_task53_public_20261128T151710_852143Z: retraining running
+Retraining pipeline_task53_public_20261128T151710_852143Z: 8 Safe model tasks
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+[1/8] emi_decision_tree: running
+Loaded safe: (949969, 36), sha256 6bf7965af2f2...
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+DT_safe: train 5.6s | test AP 0.4179 | precision 0.3493 recall 0.6875 F1 0.4632
+[1/8] emi_decision_tree: completed
+[2/8] emi_mlp: running
+Loaded safe: (949969, 36), sha256 6bf7965af2f2...
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+MLP_safe: train 33.7s | test AP 0.4075 | precision 0.3631 recall 0.6701 F1 0.4710
+[2/8] emi_mlp: completed
+[3/8] chu_extra_trees: running
+Loaded safe: (949969, 36), sha256 6bf7965af2f2...
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+extra_trees_chu_safe: train 8.2s | test AP 0.4361 | precision 0.3608 recall 0.6469 F1 0.4633
+[3/8] chu_extra_trees: completed
+[4/8] chu_lightgbm: running
+Loaded safe: (949969, 36), sha256 6bf7965af2f2...
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+lightgbm_chu_safe: train 1.9s | test AP 0.4269 | precision 0.3741 recall 0.6662 F1 0.4791
+[4/8] chu_lightgbm: completed
+[5/8] yueliang_logistic_regression: running
+Loaded safe: (949969, 36), sha256 6bf7965af2f2...
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+LR_safe: train 1.3s | test AP 0.3999 | precision 0.5892 recall 0.1571 F1 0.2480
+[5/8] yueliang_logistic_regression: completed
+[6/8] yueliang_hist_gradient_boosting: running
+Loaded safe: (949969, 36), sha256 6bf7965af2f2...
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+HGB_safe: train 6.6s | test AP 0.4244 | precision 0.5779 recall 0.1684 F1 0.2608
+[6/8] yueliang_hist_gradient_boosting: completed
+[7/8] abby_logistic_regression: running
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+<REPO_ROOT>\.venv\Lib\site-packages\mlflow\types\utils.py:440: UserWarning: Hint: Inferred schema contains integer column(s). Integer columns in Python cannot represent missing values. If your input data contains missing values at inference time, it will be encoded as floats and will cause a schema enforcement error. The best way to avoid this problem is to infer the model schema based on a realistic data sample (training dataset) that includes missing values. Alternatively, you can declare integer columns as doubles (float64) whenever these columns may have missing values. See `Handling Integers With Missing Values <https://www.mlflow.org/docs/latest/models.html#handling-integers-with-missing-values>`_ for more details.
+  warnings.warn(
+[7/8] abby_logistic_regression: completed
+[8/8] abby_random_forest: running
+MLflow Tracking URI: <SHARED_MLFLOW_TRACKING_URI>
+Experiment: SP-buy-Fraud-Detection
+<REPO_ROOT>\.venv\Lib\site-packages\mlflow\types\utils.py:440: UserWarning: Hint: Inferred schema contains integer column(s). Integer columns in Python cannot represent missing values. If your input data contains missing values at inference time, it will be encoded as floats and will cause a schema enforcement error. The best way to avoid this problem is to infer the model schema based on a realistic data sample (training dataset) that includes missing values. Alternatively, you can declare integer columns as doubles (float64) whenever these columns may have missing values. See `Handling Integers With Missing Values <https://www.mlflow.org/docs/latest/models.html#handling-integers-with-missing-values>`_ for more details.
+  warnings.warn(
+[8/8] abby_random_forest: completed
+Retraining completed. Report: <REPO_ROOT>\outputs\pipeline\pipeline_task53_public_20261128T151710_852143Z\retraining\pipeline_task53_public_20261128T151710_852143Z\summary.json
+Pipeline completed. Report: <REPO_ROOT>\outputs\pipeline\pipeline_task53_public_20261128T151710_852143Z\summary.json

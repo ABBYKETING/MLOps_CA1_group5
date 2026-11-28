@@ -1,0 +1,366 @@
+{
+  "status": "passed",
+  "executed_date": "2026-11-28",
+  "pipeline_run_id": "pipeline_task53_public_20261128T151710_852143Z",
+  "parent_run_id": "00b1115c56b744c4884d9c01ff585cf7",
+  "sources": {
+    "customers": "https://liuzheng1990.github.io/teaching/data/mlops/customers_test.csv",
+    "orders": "https://liuzheng1990.github.io/teaching/data/mlops/orders_test.csv",
+    "labels": "https://liuzheng1990.github.io/teaching/data/mlops/labels_test.csv"
+  },
+  "etl": {
+    "batch_name": "test",
+    "rows_read": {
+      "customers": 100,
+      "orders": 104,
+      "labels": 104
+    },
+    "rows_cleaned": {
+      "customers": 100,
+      "orders": 104,
+      "fraud_labels": 104
+    },
+    "dry_run": false,
+    "customers_inserted": 0,
+    "customers_updated": 100,
+    "orders_inserted": 0,
+    "orders_updated": 104,
+    "labels_inserted": 0,
+    "labels_updated": 97,
+    "rows_rejected": 7,
+    "rejected_reasons": {
+      "customer not found": 7
+    },
+    "extract_seconds": 0.17,
+    "transform_seconds": 0.05,
+    "load_seconds": 6.74,
+    "total_seconds": 8.21
+  },
+  "etl_limit_seconds": 180,
+  "etl_duration_seconds": 8.209414799988735,
+  "etl_within_three_minutes": true,
+  "performance_limit_scope": "ETL only, confirmed during testing",
+  "total_pipeline_seconds": 662.7056262999977,
+  "combined_labelled_orders": 949969,
+  "safe_features": 31,
+  "split": {
+    "name": "expanding_28d_v1",
+    "anchor_date": "2023-05-11",
+    "train_end": "2023-03-16",
+    "validation_start": "2023-03-17",
+    "validation_end": "2023-04-13",
+    "test_start": "2023-04-14",
+    "test_end": "2023-05-11",
+    "validation_days": 28,
+    "test_days": 28
+  },
+  "partitions": {
+    "Train": {
+      "rows": 671286,
+      "fraud": 68414,
+      "non_fraud": 602872,
+      "fraud_rate": 0.10191483212818381,
+      "first_order_date": "2022-11-12",
+      "last_order_date": "2023-03-16"
+    },
+    "Validation": {
+      "rows": 134547,
+      "fraud": 18184,
+      "non_fraud": 116363,
+      "fraud_rate": 0.135149798955012,
+      "first_order_date": "2023-03-17",
+      "last_order_date": "2023-04-13"
+    },
+    "Test": {
+      "rows": 144136,
+      "fraud": 17835,
+      "non_fraud": 126301,
+      "fraud_rate": 0.12373730365765666,
+      "first_order_date": "2023-04-14",
+      "last_order_date": "2023-05-11"
+    }
+  },
+  "database_before": {
+    "customers": 901412,
+    "orders": 949993,
+    "fraud_labels": 949969,
+    "rejected_records": 453,
+    "etl_batches": 2
+  },
+  "database_after": {
+    "customers": 901412,
+    "orders": 949993,
+    "fraud_labels": 949969,
+    "rejected_records": 453,
+    "etl_batches": 2
+  },
+  "existing_experiment_records_preserved": 49,
+  "existing_records_changed": [],
+  "registered_models_versions_aliases_unchanged": true,
+  "shared_readback": "passed",
+  "browser_verification": "passed",
+  "local_tests": {
+    "passed": 36,
+    "skipped": 1,
+    "subtests_passed": 14
+  },
+  "models": [
+    {
+      "model_key": "emi_decision_tree",
+      "saved_model_name": "emi_decision_tree_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "99ed196d832c4a89b6fdf3839e2812e2",
+      "model_uri": "models:/m-73a81100385245ba965d03826c392ee8",
+      "threshold": 0.1346153846153846,
+      "validation": {
+        "accuracy": 0.8410889874913599,
+        "precision": 0.44613310867733785,
+        "recall": 0.7280576330840299,
+        "f1": 0.5532501723813703,
+        "roc_auc": 0.8437991455402774,
+        "average_precision": 0.5131212801473847,
+        "tp": 13239,
+        "tn": 99927,
+        "fp": 16436,
+        "fn": 4945
+      },
+      "test": {
+        "accuracy": 0.8028389854026753,
+        "precision": 0.34926648625551915,
+        "recall": 0.6874684608915055,
+        "f1": 0.46320362674726107,
+        "roc_auc": 0.8040906821560103,
+        "average_precision": 0.4178700878268158,
+        "tp": 12261,
+        "tn": 103457,
+        "fp": 22844,
+        "fn": 5574
+      }
+    },
+    {
+      "model_key": "emi_mlp",
+      "saved_model_name": "emi_mlp_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "92d5d374e72146d9a0a8f8360c7d7ca8",
+      "model_uri": "models:/m-c7be6053bdde495d8706490d8ecaa91b",
+      "threshold": 0.15220481157302856,
+      "validation": {
+        "accuracy": 0.8458382572632611,
+        "precision": 0.4543409967156933,
+        "recall": 0.6999010118785746,
+        "f1": 0.5510000865875834,
+        "roc_auc": 0.8506738534981587,
+        "average_precision": 0.5114064281635039,
+        "tp": 12727,
+        "tn": 101078,
+        "fp": 15285,
+        "fn": 5457
+      },
+      "test": {
+        "accuracy": 0.8137245379363934,
+        "precision": 0.3630757078624377,
+        "recall": 0.6700869077656294,
+        "f1": 0.4709660893381411,
+        "roc_auc": 0.810702599827677,
+        "average_precision": 0.40748804398850286,
+        "tp": 11951,
+        "tn": 105336,
+        "fp": 20965,
+        "fn": 5884
+      }
+    },
+    {
+      "model_key": "chu_extra_trees",
+      "saved_model_name": "chu_extra_trees_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "3bc186cbbd6648c8a5a11b74edde6343",
+      "model_uri": "models:/m-05703c4022af404bb0ca9d0509cd35b6",
+      "threshold": 0.6316546532901214,
+      "validation": {
+        "accuracy": 0.8477780998461504,
+        "precision": 0.4570638154697372,
+        "recall": 0.6723493180818302,
+        "f1": 0.5441880132641933,
+        "roc_auc": 0.8481114624468897,
+        "average_precision": 0.5164163960281135,
+        "tp": 12226,
+        "tn": 101840,
+        "fp": 14523,
+        "fn": 5958
+      },
+      "test": {
+        "accuracy": 0.8145015818393739,
+        "precision": 0.36081055725811495,
+        "recall": 0.6469301934398655,
+        "f1": 0.4632525645915725,
+        "roc_auc": 0.8033504184439384,
+        "average_precision": 0.4361439848466129,
+        "tp": 11538,
+        "tn": 105861,
+        "fp": 20440,
+        "fn": 6297
+      }
+    },
+    {
+      "model_key": "chu_lightgbm",
+      "saved_model_name": "chu_lightgbm_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "0ade88eaa2aa4a8aa0418a1e71506f24",
+      "model_uri": "models:/m-24070cb69a7c41d38c595adc242ee385",
+      "threshold": 0.6062928724198768,
+      "validation": {
+        "accuracy": 0.8532706043241395,
+        "precision": 0.4706037735849057,
+        "recall": 0.6858227012758469,
+        "f1": 0.5581863754363978,
+        "roc_auc": 0.8530538768423594,
+        "average_precision": 0.5328222526539883,
+        "tp": 12471,
+        "tn": 102334,
+        "fp": 14029,
+        "fn": 5713
+      },
+      "test": {
+        "accuracy": 0.8207595604151634,
+        "precision": 0.3740712756579776,
+        "recall": 0.6662181104569667,
+        "f1": 0.4791225629548983,
+        "roc_auc": 0.812868960892319,
+        "average_precision": 0.42692871240210817,
+        "tp": 11882,
+        "tn": 106419,
+        "fp": 19882,
+        "fn": 5953
+      }
+    },
+    {
+      "model_key": "yueliang_logistic_regression",
+      "saved_model_name": "yueliang_logistic_regression_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "de1520fb06024d5ca4a3bafbcd0dc584",
+      "model_uri": "models:/m-7f4e32b6934a4d0da2ebdcc79219fd06",
+      "threshold": 0.8808716421625866,
+      "validation": {
+        "accuracy": 0.8739622585416249,
+        "precision": 0.700065274151436,
+        "recall": 0.11796084469863616,
+        "f1": 0.20190135542168675,
+        "roc_auc": 0.8320314602045629,
+        "average_precision": 0.48680053189021444,
+        "tp": 2145,
+        "tn": 115444,
+        "fp": 919,
+        "fn": 16039
+      },
+      "test": {
+        "accuracy": 0.8821460287506244,
+        "precision": 0.5891880521665965,
+        "recall": 0.1570507429212223,
+        "f1": 0.2479968126079065,
+        "roc_auc": 0.7906535585587082,
+        "average_precision": 0.3998755573534538,
+        "tp": 2801,
+        "tn": 124348,
+        "fp": 1953,
+        "fn": 15034
+      }
+    },
+    {
+      "model_key": "yueliang_hist_gradient_boosting",
+      "saved_model_name": "yueliang_hist_gradient_boosting_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "f7279eb091294693971136199ec29a38",
+      "model_uri": "models:/m-dc7fee66c02d407e882dc270b645e36b",
+      "threshold": 0.5843821372247585,
+      "validation": {
+        "accuracy": 0.8756419689773833,
+        "precision": 0.7001102535832414,
+        "recall": 0.13968323801143862,
+        "f1": 0.23289932147441775,
+        "roc_auc": 0.8529881107124839,
+        "average_precision": 0.5313790993375365,
+        "tp": 2540,
+        "tn": 115275,
+        "fp": 1088,
+        "fn": 15644
+      },
+      "test": {
+        "accuracy": 0.8818823888549703,
+        "precision": 0.5779445727482679,
+        "recall": 0.16837678721614802,
+        "f1": 0.26077895011072033,
+        "roc_auc": 0.8115876325339869,
+        "average_precision": 0.42436758627662785,
+        "tp": 3003,
+        "tn": 124108,
+        "fp": 2193,
+        "fn": 14832
+      }
+    },
+    {
+      "model_key": "abby_logistic_regression",
+      "saved_model_name": "abby_logistic_regression_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "e3740acedb6c4518a11533d8ee1c765c",
+      "model_uri": "models:/m-94243504ec264b6198e64c15d726fd44",
+      "threshold": 0.5,
+      "validation": {
+        "accuracy": 0.8723122774941099,
+        "precision": 0.709866220735786,
+        "recall": 0.09337879454465464,
+        "f1": 0.1650466562986003,
+        "roc_auc": 0.8299425054186386,
+        "average_precision": 0.482315065817548,
+        "tp": 1698,
+        "tn": 115669,
+        "fp": 694,
+        "fn": 16486
+      },
+      "test": {
+        "accuracy": 0.8806960093245269,
+        "precision": 0.5871284428688301,
+        "recall": 0.12071768993552004,
+        "f1": 0.2002604408892196,
+        "roc_auc": 0.7894045982201103,
+        "average_precision": 0.3952937771099179,
+        "tp": 2153,
+        "tn": 124787,
+        "fp": 1514,
+        "fn": 15682
+      }
+    },
+    {
+      "model_key": "abby_random_forest",
+      "saved_model_name": "abby_random_forest_safe_v1",
+      "status": "completed",
+      "mlflow_run_id": "ea39cce644df499f927f92bdb2bf471a",
+      "model_uri": "models:/m-5fe10952ea964fc0bd69d7518358f7ee",
+      "threshold": 0.5,
+      "validation": {
+        "accuracy": 0.873523750065033,
+        "precision": 0.6669527896995708,
+        "recall": 0.12818961724593048,
+        "f1": 0.2150468195027446,
+        "roc_auc": 0.8552802508563748,
+        "average_precision": 0.5267848671902379,
+        "tp": 2331,
+        "tn": 115199,
+        "fp": 1164,
+        "fn": 15853
+      },
+      "test": {
+        "accuracy": 0.880140977965255,
+        "precision": 0.5532888465204957,
+        "recall": 0.16271376506868518,
+        "f1": 0.251473136915078,
+        "roc_auc": 0.8053778873354919,
+        "average_precision": 0.41784827630415894,
+        "tp": 2902,
+        "tn": 123958,
+        "fp": 2343,
+        "fn": 14933
+      }
+    }
+  ],
+  "verification_cli_status": "passed"
+}

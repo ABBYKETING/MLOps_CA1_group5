@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "verified_at": "2026-11-28T15:33:46.328955+00:00",
+  "pipeline_run_id": "pipeline_task53_public_20261128T151710_852143Z",
+  "pipeline_summary": "outputs/pipeline/pipeline_task53_public_20261128T151710_852143Z/summary.json",
+  "etl_duration_seconds": 8.209414799988735,
+  "etl_limit_seconds": 180,
+  "etl_within_three_minutes": true,
+  "total_pipeline_seconds": 662.7056262999977,
+  "performance_scope": "ETL stage; total pipeline time is reported separately",
+  "models_completed": 8,
+  "safe_features": 31,
+  "partition_rows": {
+    "Train": 671286,
+    "Validation": 134547,
+    "Test": 144136
+  },
+  "snapshot_sha256": "6bf7965af2f2208ecf47a28716a6863f0c6d1450a9926a1e1a9c017b9a90c3cf",
+  "shared_mlflow_read_back": "passed"
+}
