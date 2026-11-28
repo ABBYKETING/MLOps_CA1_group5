@@ -1,0 +1,9 @@
+.env
+auth_config.ini
+rds-ca.pem
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+mlartifacts/
+.gitignore
